@@ -1,0 +1,17 @@
+[project]
+name = "agent-smith"
+version = "0.1.0"
+description = "Autonomous code agent for MBPP and SWE-bench tasks"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "pydantic>=2.0,<3.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0,<10.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
