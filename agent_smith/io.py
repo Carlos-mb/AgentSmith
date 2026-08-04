@@ -2,12 +2,9 @@
 
 import json
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
-
-
-ModelType = TypeVar("ModelType", bound=BaseModel)
 
 
 def read_json_file(path: str | Path) -> dict[str, Any]:
@@ -22,7 +19,8 @@ def read_json_file(path: str | Path) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Invalid JSON file: {file_path}: {exc}") from exc
     except OSError as exc:
-        raise RuntimeError(f"Could not read input file: {file_path}: {exc}") from exc
+        raise RuntimeError(f"Could not read input file: {file_path}: {exc}") \
+            from exc
 
     if not isinstance(data, dict):
         raise RuntimeError(f"Expected a JSON object in: {file_path}")
@@ -30,7 +28,7 @@ def read_json_file(path: str | Path) -> dict[str, Any]:
     return data
 
 
-def load_model(path: str | Path, model_class: type[ModelType]) -> ModelType:
+def load_model(path: str, model_class: type[BaseModel]) -> BaseModel:
     """Read JSON data and validate it with a Pydantic model."""
     data = read_json_file(path)
 
@@ -53,4 +51,5 @@ def write_model(path: str | Path, model: BaseModel) -> None:
             encoding="utf-8",
         )
     except OSError as exc:
-        raise RuntimeError(f"Could not write output file: {file_path}: {exc}") from exc
+        raise RuntimeError(f"Could not write output file: {file_path}: {exc}") \
+             from exc

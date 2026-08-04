@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Autonomous code agent for MBPP and SWE-bench tasks"
 requires-python = ">=3.10,<3.11"
 dependencies = [
+    "docker==7.1.0",
+    "mcp[cli]==1.26.0",
     "pydantic>=2.0,<3.0",
 ]
 
