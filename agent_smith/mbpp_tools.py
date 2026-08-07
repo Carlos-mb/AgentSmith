@@ -24,7 +24,8 @@ def build_test_program(
 
 
 def truncate_output(output: str) -> str:
-    """Limit tool output so one failed test does not consume the whole prompt."""
+    """Limit tool output so one failed test does
+    not consume the whole prompt."""
     if len(output) <= MAX_OUTPUT_CHARACTERS:
         return output
 
