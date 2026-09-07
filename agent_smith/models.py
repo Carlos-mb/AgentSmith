@@ -78,6 +78,27 @@ class SandboxConfig(BaseModel):
     max_memory_mb: int = 512
 
 
+class AgentLimits(BaseModel):
+    """Hard limits applied to one complete agent run.
+
+    Pseudocode:
+        - Build one instance with the limits for the selected benchmark.
+        - Check the elapsed time before every provider request and execution.
+        - Check cumulative tokens after every provider response.
+        - Stop with a valid failed ``SolutionOutput`` when any limit is reached.
+
+    The current subject and executable moulinette agree on 10 iterations,
+    6,000 input tokens, 1,500 output tokens, and 120 seconds for MBPP; and
+    30 iterations, 300,000 input tokens, 10,000 output tokens, and 900 seconds
+    for SWE-bench.
+    """
+
+    max_iterations: int = Field(..., gt=0)
+    max_input_tokens: int = Field(..., ge=0)
+    max_output_tokens: int = Field(..., ge=0)
+    max_time_seconds: float = Field(..., gt=0)
+
+
 class MBPPTaskInput(BaseModel):
     """Input data for one MBPP task."""
 

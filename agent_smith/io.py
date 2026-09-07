@@ -2,9 +2,12 @@
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
+
+
+ModelType = TypeVar("ModelType", bound=BaseModel)
 
 
 def read_json_file(path: str | Path) -> dict[str, Any]:
@@ -28,7 +31,10 @@ def read_json_file(path: str | Path) -> dict[str, Any]:
     return data
 
 
-def load_model(path: str, model_class: type[BaseModel]) -> BaseModel:
+def load_model(
+    path: str | Path,
+    model_class: type[ModelType],
+) -> ModelType:
     """Read JSON data and validate it with a Pydantic model."""
     data = read_json_file(path)
 

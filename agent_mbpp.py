@@ -69,7 +69,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         task = load_model(args.task_file, MBPPTaskInput)
 
-        # This temporary line will be replaced with: result = run_mbpp_agent(task, args)
+        # Future implementation pseudocode:
+        # 1. Create the provider pool from args and environment variables.
+        # 2. Call run_mbpp_agent(task, args).
+        # 3. Convert provider or agent failures to a valid failed SolutionOutput.
+        # Keep this placeholder until the agent implementation is deliberately wired.
         result = build_pending_result(task)
 
         write_model(args.output, result)
