@@ -81,3 +81,29 @@ def test_swebench_cli_writes_valid_solution_output(tmp_path):
     assert result.task_id == "sympy__sympy-23534"
     assert result.benchmark == "swebench"
     assert result.success is False
+
+
+def test_mbpp_cli_handles_invalid_task_file(tmp_path, capsys):
+    task_path = tmp_path / "invalid_task.json"
+    output_path = tmp_path / "mbpp_solution.json"
+
+    task_path.write_text("not json", encoding="utf-8")
+
+    exit_code = mbpp_main(
+        [
+            "--task-file",
+            str(task_path),
+            "--output",
+            str(output_path),
+            "--model-name",
+            "test-model",
+            "--provider-url",
+            "https://example.invalid/v1",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "Error: Invalid JSON file" in captured.err
+    assert not output_path.exists()

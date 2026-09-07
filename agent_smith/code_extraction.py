@@ -7,12 +7,12 @@ def extract_python_code(llm_output: str) -> tuple[str, str]:
     """Extract Python code while preserving explicit recovery feedback.
 
     Pseudocode for the remaining implementation:
-        1. Reject an empty response with an explicit English observation.
-        2. Prefer a closed ``python`` or ``py`` fenced block.
-        3. Accept an unlabelled fenced block only when ``ast.parse`` validates it.
-        4. Accept raw Python only when the complete response parses as Python.
-        5. Recover an unclosed fence when its body parses, and return a warning.
-        6. Return an empty string and precise feedback when no Python is usable.
+     1. Reject an empty response with an explicit English observation.
+     2. Prefer a closed ``python`` or ``py`` fenced block.
+     3. Accept an unlabelled fenced block only when ``ast.parse`` validates it.
+     4. Accept raw Python only when the complete response parses as Python.
+     5. Recover an unclosed fence when its body parses, and return a warning.
+     6. Return an empty string and precise feedback when no Python is usable.
 
     Returns:
         A ``(code, feedback)`` tuple. Feedback is empty for a normal extraction
