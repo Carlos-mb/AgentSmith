@@ -81,13 +81,22 @@ def final_answer(answer: str) -> NoReturn:
 
 
 def _is_import_allowed(module_name: str, patterns: Sequence[str]) -> bool:
-    """Recibir nombre absoluto y patrones; devolver bool.
+    """Check if a module is allowed by the import patterns."""
 
-    1. Comparar coincidencia exacta, o hijos de package para el patrón package.*.
-    2. No usar glob irrestricto; import relativo sin paquete definido se rechaza.
-    3. El importador real debe controlar fromlist y submódulos también. No hace E/S.
-    """
-    raise NotImplementedError("Sandbox import checks are not implemented yet.")
+    if module_name.startswith("."):
+        return False
+
+    for pattern in patterns:
+        if module_name == pattern:
+            return True
+
+        if pattern.endswith(".*"):
+            package = pattern[:-2]
+
+            if module_name.startswith(package + "."):
+                return True
+
+    return False
 
 
 def _resolve_allowed_path(
