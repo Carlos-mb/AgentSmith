@@ -13,16 +13,31 @@ def build_observation(
     execution: SandboxExecution | None,
     extraction_feedback: str,
 ) -> str:
-    """Recibir ejecución opcional y diagnóstico; devolver la observación en inglés.
+    """Build the observation returned to the LLM."""
 
-    1. Sin ejecución, devolver el diagnóstico del extractor sin inventar stdout.
-    2. Ante ejecución, anteponer el diagnóstico y conservar output y error reales.
-    3. Indicar timeout, salida parcial, truncamiento y pérdida de variables cuando
-       el trabajador lo haya comunicado. El aviso de output ya incluye cuántos
-       caracteres se omitieron; el booleano truncated por sí solo no da esa cifra.
-    4. No recortar otra vez ni alterar final_answer. No crea recursos.
-    """
-    raise NotImplementedError("Agent observations are not implemented yet.")
+    if execution is None:
+        return extraction_feedback
+
+    parts = []
+
+    if extraction_feedback:
+        parts.append(extraction_feedback)
+
+    if execution.output:
+        parts.append(execution.output)
+
+    if execution.error:
+        parts.append("Error: " + execution.error)
+
+    if execution.timed_out:
+        parts.append(
+            "Timeout. Execution timed out. Output may be partial."
+        )
+
+    if execution.final_answer is not None:
+        parts.append("Final answer:\n" + execution.final_answer)
+
+    return "\n".join(parts)
 
 
 def _build_step_metrics(

@@ -70,14 +70,12 @@ def validate_code(code: str, config: SandboxConfig) -> str | None:
 
 
 def final_answer(answer: str) -> NoReturn:
-    """Recibir string; señalar fin del bloque mediante FinalAnswerSignal(answer).
+    """Signal that the agent has finished the task."""
 
-    1. Rechazar argumentos no string con TypeError. Lanzar la señal propia.
-    2. El trabajador captura esta señal antes de Exception y envía el valor intacto.
-    3. El agente termina su bucle; el REPL imprime el valor y vuelve al prompt.
-       Nunca registrar esta función en MCP ni truncar su argumento. Sin recursos.
-    """
-    raise NotImplementedError("The final_answer control signal is not implemented yet.")
+    if not isinstance(answer, str):
+        raise TypeError("final_answer expects a string")
+
+    raise FinalAnswerSignal(answer)
 
 
 def _is_import_allowed(module_name: str, patterns: Sequence[str]) -> bool:
