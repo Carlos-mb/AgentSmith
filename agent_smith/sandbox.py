@@ -9,6 +9,8 @@ from typing import Any, Callable, NoReturn, Sequence
 from agent_smith.mcp_client import MCPClient
 from agent_smith.models import SandboxConfig
 
+from agent_smith.io import load_model
+
 
 MAX_SANDBOX_OUTPUT_CHARACTERS = 12_000
 
@@ -29,22 +31,24 @@ class FinalAnswerSignal(Exception):
 
 
 def load_sandbox_config(path: str | Path | None) -> SandboxConfig:
-    """Recibir ruta JSON opcional; devolver SandboxConfig validado.
+    """Load and validate the sandbox configuration."""
 
-    1. Crear config = SandboxConfig() si path es None; en otro caso reutilizar
-       io.load_model(path, SandboxConfig). No duplicar el lector JSON.
-    2. Comprobar config.max_execution_time_seconds > 0 y config.max_memory_mb > 0;
-       si falla alguno, elevar RuntimeError indicando el campo en inglés.
-       El modelo no exige hoy positividad: repetir esta comprobación en una
-       sesión construida directamente con SandboxConfig, sin pasar por el loader.
-    3. Conservar allowed_directories, incluida [] (ningún directorio permitido).
-       No resolver rutas contra el host ni crear carpetas aquí: la preparación
-       de la raíz visible y sus montajes pertenece al trabajador, antes de ready.
-    4. Devolver config; dejar pasar los RuntimeError del lector (archivo ausente,
-       JSON/tipos inválidos, UTF-8 inválido o error de E/S) hasta el CLI. El lector
-       cierra el archivo con with; esta función no abre otros recursos.
-    """
-    raise NotImplementedError("Sandbox configuration loading is not implemented yet.")
+    if path is None:
+        config = SandboxConfig()
+    else:
+        config = load_model(path, SandboxConfig)
+
+    if config.max_execution_time_seconds <= 0:
+        raise RuntimeError(
+            "max_execution_time_seconds must be greater than 0"
+        )
+
+    if config.max_memory_mb <= 0:
+        raise RuntimeError(
+            "max_memory_mb must be greater than 0"
+        )
+
+    return config
 
 
 def validate_code(code: str, config: SandboxConfig) -> str | None:
