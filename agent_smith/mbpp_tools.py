@@ -18,8 +18,10 @@ def build_test_program(
     test_list: list[str],
 ) -> str:
     """Combine a candidate solution with the public MBPP tests."""
-    sections = [code.strip()]
+
+    sections = []
     sections.extend(item.strip() for item in test_imports if item.strip())
+    sections.append(code.strip())
     sections.extend(item.strip() for item in test_list if item.strip())
     return "\n\n".join(section for section in sections if section) + "\n"
 

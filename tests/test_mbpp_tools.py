@@ -36,7 +36,7 @@ def test_build_test_program() -> None:
         test_list=["assert add(2, 3) == 5"],
     )
 
-    assert program.index("def add") < program.index("import math")
+    assert program.index("def add") > program.index("import math")
     assert program.index("import math") < program.index("assert add")
 
 
