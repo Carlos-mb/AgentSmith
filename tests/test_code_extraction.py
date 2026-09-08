@@ -96,3 +96,35 @@ print(result)
 #     assert feedback == (
 #         "No valid Python code was found in the model response."
 #     )
+
+def test_closed_block_with_syntax_error_is_rejected():
+    code, feedback = extract_python_code("```python\ndef broken(\n```")
+
+    assert code == ""
+    assert feedback.startswith("Python syntax error on line 1:")
+    assert "closing fence" not in feedback
+
+
+def test_empty_response_has_specific_feedback():
+    for response in ("", " \n\t"):
+        assert extract_python_code(response) == ("", "Model response was empty.")
+
+
+def test_response_without_code_is_rejected():
+    assert extract_python_code("I will inspect the tests.") == (
+        "", "No valid Python code was found in the model response."
+    )
+
+
+def test_unclosed_block_is_rejected_without_recovery():
+    code, feedback = extract_python_code("```python\nprint('hello')")
+
+    assert code == ""
+    assert feedback == "Python code block is missing its closing fence; not executed."
+
+
+def test_py_block_and_optional_end_code_marker():
+    for suffix in ("", "<end_code>"):
+        assert extract_python_code("```py\nprint('hello')\n```" + suffix) == (
+            "print('hello')", ""
+        )

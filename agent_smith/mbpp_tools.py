@@ -1,5 +1,6 @@
 """Helpers used by the MBPP MCP server."""
 
+import sys
 from typing import Any
 
 import docker
@@ -42,7 +43,16 @@ def run_mbpp_tests(
     test_list: list[str],
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Run a candidate MBPP solution against its public tests in Docker."""
+    """Run a candidate MBPP solution against its public tests in Docker.
+
+    Pendiente al conectar el agente: leer AGENT_SMITH_DEADLINE sólo en el
+    servidor de confianza. Acotar creación, arranque, wait y lectura de logs
+    por el tiempo total restante, reservando tiempo para detener/eliminar el
+    contenedor propio. Un wait timeout por sí solo no cubre toda la operación.
+    Al cancelar MCP, terminar también la ejecución Docker y conservar logs;
+    no implementar esa integración hasta que exista el presupuesto del agente.
+    Los tests de Docker no sustituyen el sandbox del Python generado por el LLM.
+    """
     if not code.strip():
         return {
             "success": False,
@@ -62,49 +72,48 @@ def run_mbpp_tests(
     program = build_test_program(code, test_imports, test_list)
     client = None
     container = None
+    started = False
+    result = None
 
     try:
         client = docker.from_env()
         container = client.containers.create(
             DEFAULT_DOCKER_IMAGE,
-            command=["python", "-c", program],
+            command=["python", "-u", "-c", program],
             network_disabled=True,
             mem_limit="128m",
             cpu_period=100_000,
             cpu_quota=50_000,
         )
         container.start()
+        started = True
 
         wait_result = container.wait(timeout=timeout_seconds)
         exit_code = int(wait_result.get("StatusCode", 1))
 
-        stdout = container.logs(stdout=True, stderr=False).decode(
+        output = container.logs(stdout=True, stderr=True).decode(
             "utf-8", errors="replace"
         )
-        stderr = container.logs(stdout=False, stderr=True).decode(
-            "utf-8", errors="replace"
-        )
-
-        output = stderr.strip() if exit_code != 0 else stdout.strip()
-        output = truncate_output(output)
+        output = truncate_output(output.strip())
 
         if exit_code == 0:
-            return {
+            result = {
                 "success": True,
                 "message": "All public tests passed.",
                 "output": output,
                 "exit_code": exit_code,
             }
 
-        return {
-            "success": False,
-            "message": "Public tests failed.",
-            "output": output or "The test process failed without output.",
-            "exit_code": exit_code,
-        }
+        else:
+            result = {
+                "success": False,
+                "message": "Public tests failed.",
+                "output": output or "The test process failed without output.",
+                "exit_code": exit_code,
+            }
 
     except ImageNotFound:
-        return {
+        result = {
             "success": False,
             "message": "Public tests could not start.",
             "output": (
@@ -113,39 +122,61 @@ def run_mbpp_tests(
             ),
             "exit_code": None,
         }
-    except DockerException as exc:
-        return {
-            "success": False,
-            "message": "Public tests could not start.",
-            "output": f"Docker error: {exc}",
-            "exit_code": None,
-        }
     except Exception as exc:
         text = str(exc)
-        if "timeout" in text.lower() or "timed out" in text.lower():
+        if started and (
+            isinstance(exc, TimeoutError)
+            or "timeout" in text.lower() or "timed out" in text.lower()
+        ):
             output = f"Execution timed out after {timeout_seconds} seconds."
         else:
-            output = f"Execution error: {text}"
+            kind = "Docker" if isinstance(exc, DockerException) else "Execution"
+            output = f"{kind} error: {text}"
 
-        return {
+        if started:
+            try:
+                partial = container.logs(stdout=True, stderr=True).decode(
+                    "utf-8", errors="replace"
+                )
+                output += "\nOutput is partial:\n" + truncate_output(partial.strip())
+            except Exception as log_error:
+                output += f"\nCould not read partial output: {log_error}"
+
+        result = {
             "success": False,
-            "message": "Public tests failed.",
+            "message": (
+                "Public tests could not complete."
+                if started else "Public tests could not start."
+            ),
             "output": output,
             "exit_code": None,
         }
     finally:
+        cleanup_errors = []
         if container is not None:
             try:
                 container.stop(timeout=1)
-            except Exception:
-                pass
+            except Exception as exc:
+                cleanup_errors.append(f"Could not stop the test container: {exc}")
             try:
                 container.remove(force=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                cleanup_errors.append(f"Could not remove the test container: {exc}")
 
         if client is not None:
             try:
                 client.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                cleanup_errors.append(f"Could not close the Docker client: {exc}")
+
+        if cleanup_errors:
+            cleanup_message = "Cleanup failed:\n" + "\n".join(cleanup_errors)
+            if result is None:
+                # Keep KeyboardInterrupt/SystemExit propagating after cleanup.
+                print(cleanup_message, file=sys.stderr)
+            else:
+                result["success"] = False
+                result["message"] += " Cleanup failed."
+                result["output"] += "\n" + cleanup_message
+
+    return result

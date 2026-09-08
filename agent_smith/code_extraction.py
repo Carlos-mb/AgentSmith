@@ -1,27 +1,25 @@
-"""Extract executable Python from the response formats allowed by the subject."""
+"""Extracción Python actual y conversores pendientes según los modelos elegidos."""
 
 import ast
 
 
 def extract_python_code(llm_output: str) -> tuple[str, str]:
-    """Extract Python code while preserving explicit recovery feedback.
+    """Recibe texto del modelo y devuelve (codigo, diagnostico).
 
-    Pseudocode for the remaining implementation:
-     1. Reject an empty response with an explicit English observation.
-     2. Prefer a closed ``python`` or ``py`` fenced block.
-     3. Accept an unlabelled fenced block only when ``ast.parse`` validates it.
-     4. Accept raw Python only when the complete response parses as Python.
-     5. Recover an unclosed fence when its body parses, and return a warning.
-     6. Return an empty string and precise feedback when no Python is usable.
-
-    Returns:
-        A ``(code, feedback)`` tuple. Feedback is empty for a normal extraction
-        and explains every recovery or failure otherwise.
+    Formato principal: un bloque cerrado ```python ... ```; también se acepta
+    la etiqueta py ya existente. El marcador <end_code> va DESPUÉS del cierre:
+    la API puede retirarlo como stop sin romper el bloque. No usar ``` como stop.
+    Se busca el bloque, se extrae su cuerpo y se comprueba con ast.parse, sin
+    ejecutarlo. Una respuesta vacía, un bloque ausente o sin cierre y una sintaxis
+    inválida devuelven código vacío con un diagnóstico distinto. Una extracción
+    correcta devuelve diagnóstico vacío. No se reparan ni recuperan bloques.
+    Python sin etiqueta o sin bloque no forma parte del soporte actual.
+    No crea recursos que haya que cerrar.
     """
 
     code: str = ""
     feedback: str = ""
-    if (llm_output == ""):
+    if (llm_output.strip() == ""):
         feedback = "Model response was empty."
         return code, feedback
 
@@ -39,67 +37,83 @@ def extract_python_code(llm_output: str) -> tuple[str, str]:
         code_ends = llm_output.find("```", code_starts)
         if (code_ends != -1):
             code = llm_output[code_starts:code_ends].strip()
+        else:
+            return "", "Python code block is missing its closing fence; not executed."
 
     if code != "":
         try:
             ast.parse(code)
             feedback = ""
-        except SyntaxError:
-            # TODO: distinguish invalid syntax from a recovered missing fence.
-            feedback = (
-                "Malformed Python code block was interpreted without "
-                "a closing fence."
-            )
+        except SyntaxError as exc:
+            code = ""
+            feedback = f"Python syntax error on line {exc.lineno}: {exc.msg}"
 
     return code, feedback
 
 
 def extract_xml_code(llm_output: str) -> str:
-    """Convert Anthropic-style XML tool calls to Python function calls.
+    """Pendiente; implementar sólo si un modelo elegido necesita este XML.
 
-    Pseudocode:
-        1. Parse every ``invoke`` element without executing XML entities.
-        2. Read the tool name and its named ``parameter`` children.
-        3. Convert parameter values to safe Python literals.
-        4. Emit one assignment and function call per invocation.
-        5. Return an empty string when the response is not this format.
+    1. Recibir la respuesta de ese modelo y documentar su formato real. XML es
+       un ejemplo del subject, no otro formato obligatorio por sí mismo.
+    2. Leer invoke y parameter con ElementTree; rechazar DTD y entidades,
+       nombres no identificadores públicos Python y parámetros repetidos.
+    3. Convertir valores a tipos básicos conforme al formato documentado del
+       modelo; no adivinar tipos con eval. Serializarlos con repr para emitir
+       print(herramienta(**argumentos)): el resultado real debe llegar a stdout
+       y desde allí a la observación. Sólo asignarlo a result no basta.
+    4. Devolver código o "" si no es este formato; lanzar ValueError con
+       diagnóstico si el formato reconocido es inválido. No abre recursos.
     """
     raise NotImplementedError("XML tool-call extraction is not implemented yet.")
 
 
 def extract_json_hermes_code(llm_output: str) -> str:
-    """Convert JSON/Hermes tool calls to Python function calls.
+    """Pendiente; implementar sólo si un modelo elegido necesita JSON/Hermes.
 
-    Pseudocode:
-        1. Locate each ``tool_call`` payload.
-        2. Decode it with the standard ``json`` module.
-        3. Validate that ``name`` is an identifier and ``arguments`` is an object.
-        4. Serialize arguments as Python literals and emit the equivalent call.
-        5. Return an empty string when the response is not this format.
+    1. Recibir texto y localizar los payloads tool_call documentados para ese
+       modelo. Decodificarlos con json.loads, nunca eval.
+    2. Exigir name identificador Python público y arguments objeto con claves
+       string; representar los valores básicos mediante repr.
+    3. Emitir print(herramienta(**argumentos)) por llamada para que el resultado
+       real pase a la observación del sandbox.
+    4. Devolver código o "" si no es este formato; si está mal formado, propagar
+       ValueError al extractor común. No abre recursos. Si el proveedor retira
+       </tool_call> al usarlo como stop, definir su recuperación con feedback
+       antes de activar ese stop; no declarar que ya está soportado.
     """
     raise NotImplementedError("JSON tool-call extraction is not implemented yet.")
 
 
 def extract_react_code(llm_output: str) -> str:
-    """Convert one ReAct Action/Action Input pair to a Python function call.
+    """Pendiente; implementar sólo si un modelo elegido necesita ReAct.
 
-    Pseudocode:
-        1. Find the final ``Action`` and ``Action Input`` fields.
-        2. Parse the input as JSON, falling back to one plain string argument.
-        3. Validate the tool name before placing it in generated Python.
-        4. Return the equivalent assignment and call, or an empty string.
+    1. Recibir texto y leer Action / Action Input conforme al formato comprobado
+       del modelo; no usar una Observation inventada por el modelo como real.
+    2. Exigir nombre identificador público y argumentos JSON objeto; no añadir
+       fallback automático a texto libre ni ejecutar valores para interpretarlos.
+    3. Emitir print(herramienta(**argumentos)) usando repr para los literales.
+    4. Devolver código o "" si el formato está ausente; lanzar ValueError si se
+       reconoce pero es inválido. El llamante explica el error. Sin recursos.
     """
     raise NotImplementedError("ReAct tool-call extraction is not implemented yet.")
 
 
-def extract_agent_code(llm_output: str) -> tuple[str, str]:
-    """Extract any response format required by Agent Smith.
+def extract_agent_code(
+    llm_output: str, response_format: str = "python"
+) -> tuple[str, str]:
+    """Pendiente: seleccionar el formato configurado, sin cascada de intentos.
 
-    Pseudocode:
-        1. Try ``extract_python_code`` first because it is the primary format.
-        2. Try XML, JSON/Hermes, and ReAct converters in that order.
-        3. Validate every converted result with ``ast.parse``.
-        4. Explain which non-Python format was interpreted.
-        5. If all strategies fail, return the original extraction feedback.
+    1. Recibir respuesta y response_format del proveedor seleccionado. Para
+       python devolver extract_python_code(llm_output), conservando su feedback.
+    2. Añadir mediante if/elif sólo los conversores necesarios para los modelos
+       que se comparen. XML, JSON/Hermes y ReAct anteriores son candidatos
+       pendientes, no tres entregables independientes. No anunciar compatibilidad
+       multiformato hasta implementar y probar los formatos realmente utilizados.
+    3. Rechazar formatos sin soporte con ("", diagnóstico). Para uno soportado,
+       convertir y validar el Python con ast.parse, nunca ejecutarlo aquí.
+    4. Devolver (código, aviso del formato convertido y de cualquier recuperación
+       expresamente soportada), o ("", diagnóstico de ValueError/SyntaxError).
+       El bucle añade siempre el aviso a la observación. No abre recursos.
     """
     raise NotImplementedError("Multi-format code extraction is not implemented yet.")

@@ -30,6 +30,14 @@ def test_read_json_file_rejects_invalid_json(tmp_path):
         read_json_file(input_path)
 
 
+def test_read_json_file_rejects_invalid_utf8(tmp_path):
+    input_path = tmp_path / "task.json"
+    input_path.write_bytes(b'{"value": "\xff"}')
+
+    with pytest.raises(RuntimeError, match="Input file is not valid UTF-8"):
+        read_json_file(input_path)
+
+
 def test_read_json_file_rejects_json_array(tmp_path):
     input_path = tmp_path / "task.json"
     input_path.write_text("[]", encoding="utf-8")

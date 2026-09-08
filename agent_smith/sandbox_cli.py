@@ -12,57 +12,57 @@ from agent_smith.sandbox import SandboxSession
 
 
 def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """Parse the subject's sandbox CLI shape.
+    """Recibir argv opcional; devolver argparse.Namespace.
 
-    Required interface::
-
-        uv run sandbox [--mcp-stdio COMMAND | --mcp-server URL] [CONFIG_JSON]
-
-    Pseudocode:
-        - Add one optional positional ``Path`` for the sandbox JSON file.
-        - Add mutually exclusive ``--mcp-stdio`` and ``--mcp-server`` options.
-        - Keep every option optional so plain ``uv run sandbox`` opens a REPL.
-        - Let argparse produce English usage and validation errors.
+    1. Aceptar uv run sandbox [--mcp-stdio COMMAND | --mcp-server URL] [CONFIG_JSON].
+    2. Path posicional opcional y transportes mutuamente excluyentes; sin argumentos
+       abrir REPL con defaults. No añadir comandos opcionales.
+    3. argparse da uso/errores en inglés; no crea recursos.
     """
     raise NotImplementedError("Sandbox argument parsing is not implemented yet.")
 
 
 def _build_mcp_client(args: argparse.Namespace) -> MCPClient | None:
-    """Create the optional MCP client selected on the command line.
+    """Recibir argumentos; devolver MCPClient sin abrir o None si no se pidió MCP.
 
-    Pseudocode:
-        - Return ``None`` when neither transport was requested.
-        - Parse a stdio command with ``shlex`` instead of a shell.
-        - Pass the HTTP URL unchanged to ``MCPClient`` for later validation.
-        - Do not connect until the surrounding cleanup structure is ready.
+    1. stdio: separar con shlex.split, nunca ejecutar mediante shell.
+    2. HTTP: pasar server_url al validador del cliente, sin cambiar el transporte.
+    3. No conectar aquí; el llamante prepara primero la limpieza.
     """
     raise NotImplementedError("Sandbox MCP client creation is not implemented yet.")
 
 
 def run_repl(session: SandboxSession) -> int:
-    """Read and execute entries repeatedly in one persistent namespace.
+    """Recibir sesión iniciada; ejecutar entradas persistentes y devolver código de salida.
 
-    Pseudocode:
-        1. Show a short prompt without mixing it with MCP stdio output.
-        2. Read one complete entry; support multi-line input in a simple way.
-        3. Exit cleanly on the exact ``exit`` command or EOF.
-        4. Execute through ``session`` and print output or the raised error.
-        5. Stop when ``final_answer`` is captured.
-        6. Convert an interactive keyboard interrupt to a clean next prompt or exit.
+    1. Leer con input un prompt corto. codeop.compile_command distingue entrada
+       incompleta y pide continuación; sólo comprueba completitud, no ejecuta código.
+       Si detecta SyntaxError, mostrarlo, vaciar la entrada y volver al prompt;
+       no propagarlo como fallo de arranque a main ni enviarlo a ejecutar.
+    2. exit exacto en prompt principal o EOF terminan normalmente (devolver 0).
+       No añadir reset/quit ni otros comandos.
+    3. Cada entrada completa pasa por session.execute y las mismas restricciones
+       que en agente. Imprimir salida, truncamiento y errores; volver al prompt.
+    4. final_answer imprime su string y vuelve al prompt conservando variables;
+       sólo termina el bucle en modo agente, no este REPL.
+    5. KeyboardInterrupt/SystemExit salen hacia main para limpieza y propagación;
+       no convertirlos silenciosamente en un error corriente o nuevo prompt.
+    6. Tras timeout/muerte del trabajador, explicar que se perdieron las variables;
+       session reinicia internamente en la siguiente entrada si es posible.
+       La sesión la cierra main; no cerrar MCP ni worker prestados aquí.
     """
     raise NotImplementedError("The interactive sandbox REPL is not implemented yet.")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Load configuration, connect MCP, and run the interactive sandbox.
+    """Recibir argv opcional; preparar y cerrar REPL, devolviendo su código.
 
-    Pseudocode:
-        1. Parse arguments and load ``SandboxConfig`` or safe defaults.
-        2. Build the optional MCP client.
-        3. Enter MCP and sandbox context managers with ``ExitStack``.
-        4. Print the dynamically generated manual when an MCP server is present.
-        5. Delegate to ``run_repl``.
-        6. Report expected configuration/startup errors in English and return 1.
-        7. Always close the worker and MCP transport.
+    1. Parsear, cargar config JSON o defaults y construir cliente MCP opcional.
+    2. Usar ExitStack para MCP y SandboxSession en ese orden; si una entrada falla,
+       start limpia sus recursos parciales y ExitStack cierra las anteriores.
+    3. Mostrar manual dinámico si hay MCP, sin contaminar stdout del servidor stdio.
+    4. Ejecutar run_repl. Errores ordinarios de configuración/arranque: stderr y 1.
+    5. finally cierra sandbox y MCP también al salir por exit, EOF, interrupción o
+       SystemExit. Propagar estas dos excepciones después del cierre.
     """
     raise NotImplementedError("The sandbox CLI is not implemented yet.")

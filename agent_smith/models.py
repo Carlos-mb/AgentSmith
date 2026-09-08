@@ -79,18 +79,19 @@ class SandboxConfig(BaseModel):
 
 
 class AgentLimits(BaseModel):
-    """Hard limits applied to one complete agent run.
+    """Límites de una tarea completa; conservar el modelo y sus campos.
 
-    Pseudocode:
-        - Build one instance with the limits for the selected benchmark.
-        - Check the elapsed time before every provider request and execution.
-        - Check cumulative tokens after every provider response.
-        - Stop with a valid failed ``SolutionOutput`` when any limit is reached.
-
-    The current subject and executable moulinette agree on 10 iterations,
-    6,000 input tokens, 1,500 output tokens, and 120 seconds for MBPP; and
-    30 iterations, 300,000 input tokens, 10,000 output tokens, and 900 seconds
-    for SWE-bench.
+    Pseudocódigo pendiente:
+    1. El adaptador crea límites del benchmark y los coloca en budget (agent_loop).
+    2. El CLI toma started_at antes de leer JSON; deadline incluye preparación,
+       bucle, peticiones/reintentos, MCP y limpieza, sin reinicios del reloj.
+    3. Comprobar consumo acumulado antes/después de pedir API y antes de ejecutar
+       o aceptar respuesta final. No confundir agotar con exceder el último paso.
+    4. Mantener max_iterations configurable sin superar subject VI.1: MBPP
+       10/6.000/1.500/120 s; SWE-bench 30/300.000/10.000/900 s. Coinciden con
+       moulinette/moulinette/models.py. Su README conserva límites MBPP antiguos.
+    5. No crea recursos. Las métricas incompletas se comunican como fallo explícito,
+       no como ceros de consumo real; política en ProviderPool.complete.
     """
 
     max_iterations: int = Field(..., gt=0)

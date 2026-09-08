@@ -21,6 +21,10 @@ def read_json_file(path: str | Path) -> dict[str, Any]:
         raise RuntimeError(f"Input file not found: {file_path}") from exc
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Invalid JSON file: {file_path}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(
+            f"Input file is not valid UTF-8: {file_path}"
+        ) from exc
     except OSError as exc:
         raise RuntimeError(f"Could not read input file: {file_path}: {exc}") \
             from exc

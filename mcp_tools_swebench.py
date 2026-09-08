@@ -10,81 +10,131 @@ mcp = FastMCP("Agent Smith SWE-bench tools")
 
 @mcp.tool()
 def read_file(filepath: str, start_line: int, end_line: int) -> str:
-    """Read an inclusive file range with one-based line numbers.
+    """Recibir ruta/rango; devolver líneas numeradas del helper.
 
-    Pseudocode: delegate unchanged arguments to ``swebench_tools.read_file``.
+    Pseudocódigo pendiente:
+    1. Delegar los argumentos sin cambios a swebench_tools.read_file.
+    2. Devolver su resultado intacto; errores ordinarios pasan al SDK como errores
+       MCP. No suprimir KeyboardInterrupt/SystemExit.
+    3. No abrir Docker aquí; el helper libera sus recursos. Ningún print de
+       depuración en stdout del servidor stdio.
     """
     raise NotImplementedError("The read_file MCP wrapper is not implemented yet.")
 
 
 @mcp.tool()
 def edit_file(filepath: str, old_str: str, new_str: str) -> str:
-    """Replace one exact unique string and validate the resulting file.
+    """Recibir ruta y textos; devolver feedback de edición, sintaxis y lint.
 
-    Pseudocode: delegate unchanged arguments to ``swebench_tools.edit_file``.
+    La coincidencia única es política nuestra; subject V.5.1 no fija multiplicidad.
+
+    Pseudocódigo pendiente:
+    1. Delegar los argumentos sin cambios a swebench_tools.edit_file.
+    2. Devolver su resultado intacto; errores ordinarios pasan al SDK como errores
+       MCP. No suprimir KeyboardInterrupt/SystemExit.
+    3. No abrir Docker aquí; el helper libera sus recursos. Ningún print de
+       depuración en stdout del servidor stdio.
     """
     raise NotImplementedError("The edit_file MCP wrapper is not implemented yet.")
 
 
 @mcp.tool()
 def list_files(directory: str, pattern: str) -> list[str]:
-    """List sorted files below an authorized directory using a glob pattern.
+    """Recibir directorio/glob; devolver lista de rutas ordenadas.
 
-    Pseudocode: delegate unchanged arguments to ``swebench_tools.list_files``.
+    Pseudocódigo pendiente:
+    1. Delegar los argumentos sin cambios a swebench_tools.list_files.
+    2. Devolver su resultado intacto; errores ordinarios pasan al SDK como errores
+       MCP. No suprimir KeyboardInterrupt/SystemExit.
+    3. No abrir Docker aquí; el helper libera sus recursos. Ningún print de
+       depuración en stdout del servidor stdio.
     """
     raise NotImplementedError("The list_files MCP wrapper is not implemented yet.")
 
 
 @mcp.tool()
 def search_code(pattern: str, file_pattern: str) -> str:
-    """Search matching files and return absolute path, line, and content.
+    """Recibir patrón/filtro; devolver coincidencias con ruta y línea.
 
-    Pseudocode: delegate unchanged arguments to ``swebench_tools.search_code``.
+    Pseudocódigo pendiente:
+    1. Delegar los argumentos sin cambios a swebench_tools.search_code.
+    2. Devolver su resultado intacto; errores ordinarios pasan al SDK como errores
+       MCP. No suprimir KeyboardInterrupt/SystemExit.
+    3. No abrir Docker aquí; el helper libera sus recursos. Ningún print de
+       depuración en stdout del servidor stdio.
     """
     raise NotImplementedError("The search_code MCP wrapper is not implemented yet.")
 
 
 @mcp.tool()
 def search_function_or_class_definition_in_code(name: str) -> str:
-    """Find function or class definitions for a Python identifier.
+    """Recibir nombre; devolver definiciones candidatas con ruta y línea.
 
-    Pseudocode: delegate the name to the same function in ``swebench_tools``.
+    Pseudocódigo pendiente:
+    1. Delegar name a search_function_or_class_definition_in_code del módulo
+       swebench_tools, sin transformarlo.
+    2. Devolver su resultado intacto; errores ordinarios pasan al SDK como errores
+       MCP. No suprimir KeyboardInterrupt/SystemExit.
+    3. No abrir Docker aquí; el helper libera sus recursos. Ningún print de
+       depuración en stdout del servidor stdio.
     """
     raise NotImplementedError("The definition-search MCP wrapper is not implemented yet.")
 
 
 @mcp.tool()
 def find_references(name: str, filepath: str, line: int) -> str:
-    """Find references to the symbol identified at a source location.
+    """Recibir nombre, archivo y línea; devolver usos candidatos y limitaciones.
 
-    Pseudocode: delegate unchanged arguments to ``swebench_tools.find_references``.
+    La búsqueda textual propuesta no garantiza resolver todos los símbolos.
+
+    Pseudocódigo pendiente:
+    1. Delegar los argumentos sin cambios a swebench_tools.find_references.
+    2. Devolver su resultado intacto; errores ordinarios pasan al SDK como errores
+       MCP. No suprimir KeyboardInterrupt/SystemExit.
+    3. No abrir Docker aquí; el helper libera sus recursos. Ningún print de
+       depuración en stdout del servidor stdio.
     """
     raise NotImplementedError("The find_references MCP wrapper is not implemented yet.")
 
 
 @mcp.tool()
 def run_tests() -> dict[str, Any]:
-    """Run the exact SWE-bench evaluation script for the active task.
+    """Sin argumentos; devolver salida real del eval_script, sin deducir éxito.
 
-    Pseudocode: return ``swebench_tools.run_tests()`` without extra stdout.
+    Pseudocódigo pendiente:
+    1. Delegar los argumentos sin cambios a swebench_tools.run_tests.
+    2. Devolver su resultado intacto; errores ordinarios pasan al SDK como errores
+       MCP. No suprimir KeyboardInterrupt/SystemExit.
+    3. No abrir Docker aquí; el helper libera sus recursos. Ningún print de
+       depuración en stdout del servidor stdio.
     """
     raise NotImplementedError("The run_tests MCP wrapper is not implemented yet.")
 
 
 @mcp.tool()
 def get_patch() -> str:
-    """Return the unified git diff for all task-repository changes.
+    """Sin argumentos; devolver diff íntegro, incluida cadena vacía.
 
-    Pseudocode: return ``swebench_tools.get_patch()`` without transformation.
+    Pseudocódigo pendiente:
+    1. Delegar los argumentos sin cambios a swebench_tools.get_patch.
+    2. Devolver su resultado intacto; errores ordinarios pasan al SDK como errores
+       MCP. No suprimir KeyboardInterrupt/SystemExit.
+    3. No abrir Docker aquí; el helper libera sus recursos. Ningún print de
+       depuración en stdout del servidor stdio.
     """
     raise NotImplementedError("The get_patch MCP wrapper is not implemented yet.")
 
 
 @mcp.tool()
 def run_command(command: str, workdir: str) -> dict[str, Any]:
-    """Run a bounded shell command in an authorized container directory.
+    """Recibir command/workdir; devolver stdout, stderr, exit_code y timed_out.
 
-    Pseudocode: delegate unchanged arguments to ``swebench_tools.run_command``.
+    Pseudocódigo pendiente:
+    1. Delegar los argumentos sin cambios a swebench_tools.run_command.
+    2. Devolver su resultado intacto; errores ordinarios pasan al SDK como errores
+       MCP. No suprimir KeyboardInterrupt/SystemExit.
+    3. No abrir Docker aquí; el helper libera sus recursos. Ningún print de
+       depuración en stdout del servidor stdio.
     """
     raise NotImplementedError("The run_command MCP wrapper is not implemented yet.")
 

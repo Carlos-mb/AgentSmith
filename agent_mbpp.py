@@ -69,11 +69,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         task = load_model(args.task_file, MBPPTaskInput)
 
-        # Future implementation pseudocode:
-        # 1. Create the provider pool from args and environment variables.
-        # 2. Call run_mbpp_agent(task, args).
-        # 3. Convert provider or agent failures to a valid failed SolutionOutput.
-        # Keep this placeholder until the agent implementation is deliberately wired.
+        # Pseudocódigo pendiente (conservar placeholder hasta implementar):
+        # 1. Al entrar en main, ANTES de parsear/cargar, tomar started_at=monotonic().
+        # 2. Tras leer task, llamar run_mbpp_agent(task, args, started_at=started_at).
+        #    El adaptador es dueño del presupuesto y de todas sus conexiones.
+        # 3. Escribir el resultado real incluso en fallo. Si se interrumpe, el
+        #    adaptador adjunta partial_result a KeyboardInterrupt/SystemExit tras
+        #    cerrar recursos; escribirlo si existe y volver a lanzar la excepción.
+        # 4. No reemplazar métricas reales por build_pending_result. Los ceros
+        #    actuales describen sólo un agente NO ejecutado, no una solución.
         result = build_pending_result(task)
 
         write_model(args.output, result)

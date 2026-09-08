@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Any, Sequence
 
-from agent_smith.models import AgentLimits, SolutionOutput, StepMetrics
+from agent_smith.models import SolutionOutput, StepMetrics
 from agent_smith.providers import CompletionResponse, ProviderPool
 from agent_smith.sandbox import SandboxExecution, SandboxSession
 
@@ -13,15 +13,14 @@ def build_observation(
     execution: SandboxExecution | None,
     extraction_feedback: str,
 ) -> str:
-    """Build the explicit observation returned to the model.
+    """Recibir ejecución opcional y diagnóstico; devolver la observación en inglés.
 
-    Pseudocode:
-        - If extraction produced no code, return the extraction failure verbatim.
-        - Include recovery warnings before normal execution output.
-        - State when execution timed out and label any retained partial output.
-        - State exactly how much output was truncated.
-        - Include syntax, policy, tool, or runtime errors without hiding them.
-        - Never invent output for an execution that did not happen.
+    1. Sin ejecución, devolver el diagnóstico del extractor sin inventar stdout.
+    2. Ante ejecución, anteponer el diagnóstico y conservar output y error reales.
+    3. Indicar timeout, salida parcial, truncamiento y pérdida de variables cuando
+       el trabajador lo haya comunicado. El aviso de output ya incluye cuántos
+       caracteres se omitieron; el booleano truncated por sí solo no da esa cifra.
+    4. No recortar otra vez ni alterar final_answer. No crea recursos.
     """
     raise NotImplementedError("Agent observations are not implemented yet.")
 
@@ -32,30 +31,39 @@ def _build_step_metrics(
     sandbox_input: str,
     sandbox_output: str,
 ) -> StepMetrics:
-    """Translate one real provider/execution cycle into ``StepMetrics``.
+    """Recibir la generación y ejecución de un paso; devolver StepMetrics.
 
-    Pseudocode:
-        - Copy provider-reported token counts and measured request time.
-        - Preserve the raw model text before code extraction.
-        - Preserve the exact code and exact sandbox observation.
-        - Copy URL, model, and retry count without secrets.
-        - Use a one-based step number.
+    1. Numerar desde 1. Copiar texto bruto, código efectivamente enviado y observación.
+    2. completion contiene la suma de tokens y tiempos de TODOS los intentos de
+       este paso; retries = request_count - 1. No usar sólo la última petición.
+    3. Copiar URL pública sin credenciales y modelo. Si hubo fallo definitivo,
+       el proveedor conserva la misma información en last_completion; texto vacío
+       significa que no llegó texto, nunca una respuesta inventada.
+    4. Si completion.usage_complete es falso (campo interno pendiente descrito en
+       CompletionResponse), marcarlo expresamente en sandbox_output: los
+       enteros son subtotales conocidos, no el consumo total ni un cero medido.
+       El resultado final también debe fallar con ese aviso. No abre recursos.
     """
     raise NotImplementedError("Step metric construction is not implemented yet.")
 
 
 def _find_limit_error(
-    steps: Sequence[StepMetrics],
-    elapsed_seconds: float,
-    limits: AgentLimits,
+    budget: dict[str, Any],
+    *,
+    before_request: bool = True,
 ) -> str | None:
-    """Return an English error when cumulative run limits are exhausted.
+    """Recibir presupuesto y fase; devolver error en inglés o None.
 
-    Pseudocode:
-        - Compare step count with the iteration limit.
-        - Sum real input and output tokens across all completed steps.
-        - Compare monotonic elapsed time with the wall-clock limit.
-        - Return the first precise limit message, otherwise ``None``.
+    1. Leer limits, started_at, steps y los contadores del mismo budget compartido.
+       Comparar time.monotonic() con deadline; nunca reiniciar el reloj en el bucle.
+    2. Rechazar uso desconocido y totales estrictamente mayores que los límites.
+       No recortar los valores medidos para hacerlos encajar.
+    3. Si before_request=True, además impedir otro paso cuando len(steps) alcanza
+       max_iterations o no quedan tokens. complete revisa cada reintento sin
+       contarlo como otra iteración, incluyendo el historial reenviado.
+    4. Con before_request=False, permitir finalizar el último paso válido aunque
+       agote exactamente las iteraciones/tokens. Aplicar esta fase después de API,
+       antes del sandbox y antes de aceptar final_answer. Sin recursos propios.
     """
     raise NotImplementedError("Agent limit checks are not implemented yet.")
 
@@ -72,14 +80,19 @@ def _build_solution_output(
     total_time_seconds: float,
     error: str | None,
 ) -> SolutionOutput:
-    """Build a metrics-consistent final result for success or failure.
+    """Recibir resultado, pasos y métricas medidas; devolver SolutionOutput.
 
-    Pseudocode:
-        - Copy steps to a list and set ``iterations`` to its length.
-        - Sum token totals from those same steps.
-        - Use the measured request count, including provider retries.
-        - Preserve the full system prompt and final English error.
-        - Never use fabricated placeholder metrics.
+    1. Copiar steps, iterations=len(steps), prompt íntegro y solución capturada.
+    2. Sumar los tokens de los pasos, incluidos intentos fallidos con uso conocido;
+       deben coincidir con budget. Usar total_requests real, incluidos reintentos.
+    3. total_time_seconds se mide desde la entrada CLI hasta acabar la limpieza:
+       el adaptador actualiza el resultado provisional del bucle tras cerrar todo.
+    4. En fallo conservar pasos, tiempos y error; no sustituirlos por el placeholder
+       del CLI. Si falta uso, success=False, solution="" y error aclara que los
+       tokens son subtotales conocidos y que no se puede certificar el presupuesto.
+    5. El esquema público exige enteros y no tiene un indicador de uso desconocido:
+       esta política explícita de fallo no equivale a métricas completas; seleccionar
+       proveedores verificables antes de evaluar. No crea recursos.
     """
     raise NotImplementedError("Solution output construction is not implemented yet.")
 
@@ -92,24 +105,36 @@ def run_agent_loop(
     task_prompt: str,
     providers: ProviderPool,
     sandbox: SandboxSession,
-    limits: AgentLimits,
+    budget: dict[str, Any],
 ) -> SolutionOutput:
-    """Run the complete agent loop until ``final_answer`` or a hard limit.
+    """Recibir tarea, prompts, conexiones abiertas y budget; devolver resultado.
 
-    Pseudocode:
-        1. Record a monotonic start time and create the initial message history.
-        2. Before each iteration, stop if any cumulative limit is exhausted.
-        3. Request one completion and count every underlying API request.
-        4. Extract Python, XML, JSON/Hermes, or ReAct through
-           ``extract_agent_code``.
-        5. If extraction fails, record a step with no sandbox input and feed the
-           explicit feedback back to the model.
-        6. Otherwise execute the code in the persistent sandbox and record the
-           exact input and observation.
-        7. Append the real assistant response and observation to the history.
-        8. When ``final_answer`` is captured, return it as the solution.
-        9. Convert ordinary provider, MCP, and sandbox failures into a valid
-           failed ``SolutionOutput``; let KeyboardInterrupt/SystemExit propagate.
-        10. Guarantee ``iterations == len(steps)`` and exact cumulative totals.
+    Presupuesto común pendiente: un diccionario, sin otra jerarquía. El CLI toma
+    started_at=time.monotonic() al entrar en main, antes de leer JSON/configuración.
+    El adaptador crea budget con started_at, deadline=started_at+limits.max_time_seconds,
+    limits, steps=[], total_requests=0, input_tokens=0, output_tokens=0 y
+    usage_complete=True. Proveedor y bucle comparten ese objeto; los tiempos de
+    preparación, herramientas, esperas y limpieza forman parte de la misma tarea.
+
+    1. Crear historial con los prompts exactos. Revisar _find_limit_error antes
+       de pedir una respuesta. complete(messages, budget=budget) revisa también
+       cada envío y recibe el tiempo y la salida disponibles.
+    2. Cada ciclo con alguna petición produce UN StepMetrics, incluso si agota
+       reintentos. complete mantiene last_completion y los contadores antes de
+       propagar fallos. Sin petición no inventar un paso. Registrar primero las
+       métricas recibidas; revisarlas antes de ejecutar contenido del modelo.
+    3. Extraer con extract_agent_code usando el response_format del modelo activo;
+       sólo python está implementado hoy. Sin código, guardar sandbox_input="" y
+       diagnóstico. Con código, ejecutar sandbox.execute(code, deadline=deadline).
+    4. Crear observación real con build_observation y completar el paso. Añadir
+       al historial la respuesta del asistente y esa observación, incluidos avisos.
+    5. Revisar de nuevo límites antes de continuar o aceptar final_answer; no
+       declarar éxito si la llamada o ejecución terminó fuera de presupuesto.
+       final_answer no demuestra aprobar tests ocultos: success expresa al agente.
+    6. Devolver _build_solution_output. En errores ordinarios conservar el paso
+       parcial y el error; KeyboardInterrupt/SystemExit suben al adaptador para
+       limpieza y al CLI. No cerrar conexiones prestadas ni hacer otra petición
+       para explicar un fallo. El adaptador cierra sus recursos incluso si se acaba
+       el tiempo, registra el tiempo real de limpieza y convierte exceso en fallo.
     """
     raise NotImplementedError("The agent loop is not implemented yet.")
