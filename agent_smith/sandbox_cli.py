@@ -12,14 +12,32 @@ from agent_smith.sandbox import SandboxSession
 
 
 def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """Recibir argv opcional; devolver argparse.Namespace.
+    """Parse sandbox command-line arguments."""
 
-    1. Aceptar uv run sandbox [--mcp-stdio COMMAND | --mcp-server URL] [CONFIG_JSON].
-    2. Path posicional opcional y transportes mutuamente excluyentes; sin argumentos
-       abrir REPL con defaults. No añadir comandos opcionales.
-    3. argparse da uso/errores en inglés; no crea recursos.
-    """
-    raise NotImplementedError("Sandbox argument parsing is not implemented yet.")
+    parser = argparse.ArgumentParser(
+        description="Run the interactive sandbox."
+    )
+
+    parser.add_argument(
+        "config",
+        nargs="?",
+        type=Path,
+        help="Path to the sandbox configuration JSON file.",
+    )
+
+    mcp_group = parser.add_mutually_exclusive_group()
+
+    mcp_group.add_argument(
+        "--mcp-stdio",
+        help="Command used to start an MCP server with stdio.",
+    )
+
+    mcp_group.add_argument(
+        "--mcp-server",
+        help="URL of an MCP server.",
+    )
+
+    return parser.parse_args(argv)
 
 
 def _build_mcp_client(args: argparse.Namespace) -> MCPClient | None:
