@@ -17,23 +17,101 @@ class MCPManual:
     prompts: list[dict[str, Any]]
 
     def as_text(self) -> str:
-        """Devolver manual en texto desde los esquemas descubiertos, sin E/S.
+        """Return the MCP manual as text."""
 
-        1. Incluir instrucciones del servidor y ordenar capacidades por nombre.
-        2. Mostrar nombre, descripción, inputSchema con properties, tipos, required y
-           defaults declarados. Mantener orden de properties para explicar posicionales
-           del proxy; kwargs evita depender de ese orden no normativo de JSON Schema.
-        3. Documentar read_resource(uri) y get_prompt(name, arguments), recursos,
-           templates y prompts reales. No convertir schemas en firmas Python con exec.
-        4. Explicar nombres que no sean identificadores Python públicos o colisionen
-           con final_answer/helpers: quedan accesibles por mcp_call_tool(name, arguments).
-           final_answer nunca se sobrescribe. Ese helper conserva el resultado estructurado
-           completo; proxies con outputSchema de única propiedad requerida result
-           devuelven su valor (convención explícita para envelopes FastMCP 1.26).
-           No es una regla universal MCP. Sin credenciales ni cliente en el manual.
-        """
-        raise NotImplementedError("MCP manual rendering is not implemented yet.")
+        lines = []
 
+        if self.instructions:
+            lines.append("SERVER INSTRUCTIONS")
+            lines.append(self.instructions)
+            lines.append("")
+
+        lines.append("TOOLS")
+
+        for tool in sorted(self.tools, key=lambda item: item.get("name", "")):
+            name = tool.get("name", "")
+            description = tool.get("description", "")
+            schema = tool.get("inputSchema", {})
+            properties = schema.get("properties", {})
+            required = schema.get("required", [])
+
+            lines.append("")
+            lines.append("Tool: " + name)
+
+            if description:
+                lines.append("Description: " + description)
+
+            lines.append("Parameters:")
+
+            for parameter_name, parameter in properties.items():
+                parameter_type = parameter.get("type", "unknown")
+
+                line = "- " + parameter_name + ": " + str(parameter_type)
+
+                if parameter_name in required:
+                    line += " (required)"
+                else:
+                    line += " (optional)"
+
+                if "default" in parameter:
+                    line += ", default=" + repr(parameter["default"])
+
+                lines.append(line)
+            if not name.isidentifier() or name in {
+                                                    "final_answer",
+                                                    "mcp_call_tool",
+                                                    "read_resource",
+                                                    "get_prompt",
+                                                }:
+                lines.append(
+                    "Call with mcp_call_tool(name, arguments)."
+                )
+
+        lines.append("")
+        lines.append("RESOURCES")
+        lines.append("Use read_resource(uri).")
+
+        for resource in sorted(
+            self.resources,
+            key=lambda item: item.get("name", ""),
+        ):
+            lines.append(
+                "- "
+                + resource.get("name", "")
+                + ": "
+                + str(resource.get("uri", ""))
+            )
+
+        lines.append("")
+        lines.append("RESOURCE TEMPLATES")
+
+        for template in sorted(
+            self.resource_templates,
+            key=lambda item: item.get("name", ""),
+        ):
+            lines.append(
+                "- "
+                + template.get("name", "")
+                + ": "
+                + str(template.get("uriTemplate", ""))
+            )
+
+        lines.append("")
+        lines.append("PROMPTS")
+        lines.append("Use get_prompt(name, arguments).")
+
+        for prompt in sorted(
+            self.prompts,
+            key=lambda item: item.get("name", ""),
+        ):
+            lines.append("- " + prompt.get("name", ""))
+
+        lines.append("")
+        lines.append(
+            "final_answer is provided by the sandbox "
+            "and is never replaced by an MCP tool."
+        )
+        return "\n".join(lines)
 
 class MCPClient:
     """Una sesión MCP stdio o HTTP streamable detrás de una API síncrona.
