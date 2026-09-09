@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 from pathlib import Path
 from typing import Sequence
 
@@ -41,14 +42,16 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def _build_mcp_client(args: argparse.Namespace) -> MCPClient | None:
-    """Recibir argumentos; devolver MCPClient sin abrir o None si no se pidió MCP.
+    """Build an MCP client from CLI arguments without connecting."""
 
-    1. stdio: separar con shlex.split, nunca ejecutar mediante shell.
-    2. HTTP: pasar server_url al validador del cliente, sin cambiar el transporte.
-    3. No conectar aquí; el llamante prepara primero la limpieza.
-    """
-    raise NotImplementedError("Sandbox MCP client creation is not implemented yet.")
+    if args.mcp_stdio is not None:
+        command = shlex.split(args.mcp_stdio)
+        return MCPClient(stdio_command=command)
 
+    if args.mcp_server is not None:
+        return MCPClient(server_url=args.mcp_server)
+
+    return None
 
 def run_repl(session: SandboxSession) -> int:
     """Recibir sesión iniciada; ejecutar entradas persistentes y devolver código de salida.

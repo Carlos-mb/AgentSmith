@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
-
+from urllib.parse import urlparse
 
 @dataclass
 class MCPManual:
@@ -113,31 +114,65 @@ class MCPManual:
         )
         return "\n".join(lines)
 
+
 class MCPClient:
     """Una sesión MCP stdio o HTTP streamable detrás de una API síncrona.
 
-    Decisión: conservar UN hilo privado y UN event loop del SDK. El agente, REPL y
-    supervisor del trabajador son síncronos y ya están separados; volverlos todos
-    async supondría más cambios. No crear un loop por llamada ni por herramienta.
+    Decisión: conservar UN hilo privado y UN event loop del SDK. El agente,
+    REPL y supervisor del trabajador son síncronos y ya están separados;
+    volverlos todos async supondría más cambios. No crear un loop por llamada ni por herramienta.
     Una sola corutina propietaria abre y cierra los contextos SDK, porque los
     cancel scopes de AnyIO deben salir en la misma tarea que los creó.
     """
 
     def __init__(
-        self,
-        *,
-        stdio_command: Sequence[str] | None = None,
-        server_url: str | None = None,
-        environment: Mapping[str, str] | None = None,
-    ) -> None:
-        """Recibir un transporte y entorno opcional; guardar configuración sin conectar.
+                self,
+                *,  # from here, parameters must be provided by name
+                stdio_command: Sequence[str] | None = None,
+                server_url: str | None = None,
+                environment: Mapping[str, str] | None = None,
+                ) -> None:
+        """Store MCP configuration without opening a connection."""
 
-        1. Exigir exactamente uno: comando stdio no vacío o URL HTTP(S) válida.
-        2. Copiar sólo entorno necesario para Python y Docker del servidor propio;
-           nunca propagar todas las claves LLM con os.environ.copy().
-        3. Inicializar sesión, hilo, loop y manual vacíos. Devolver None; no abrir E/S.
-        """
-        raise NotImplementedError("MCP client initialization is not implemented yet.")
+        if stdio_command is not None and server_url is not None:
+            raise ValueError("Exactly one MCP transport must be provided.")
+
+        if stdio_command is None and server_url is None:
+            raise ValueError("Exactly one MCP transport must be provided.")
+
+        if stdio_command is not None:
+            if isinstance(stdio_command, (str, bytes)):
+                raise ValueError(
+                    "stdio_command must be a sequence of arguments.")
+
+            if not stdio_command:
+                raise ValueError("stdio_command cannot be empty.")
+
+            self.stdio_command = list(stdio_command)
+            self.server_url = None
+
+        else:
+            if not isinstance(server_url, str):
+                raise ValueError("server_url must be a string.")
+
+            parsed_url = urlparse(server_url)
+
+            if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+                raise ValueError("server_url must be a valid HTTP or HTTPS URL.")
+
+            self.stdio_command = None
+            self.server_url = server_url
+
+        self.environment = dict(environment) if environment is not None else {}
+
+        self._session = None
+        self._thread = None
+        self._loop = None
+        self._startup_error = None
+        self._manual = None
+
+        self._ready_event = threading.Event()
+        self._close_event = None
 
     def start(self, *, deadline: float | None = None) -> None:
         """Recibir deadline opcional; conectar y descubrir, o limpiar y elevar error.
