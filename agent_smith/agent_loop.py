@@ -1,11 +1,9 @@
-"""One custom Thought -> Code -> Observation loop shared by both benchmarks."""
+"""One pending asynchronous Thought -> Code -> Observation loop for both tasks."""
 
 from __future__ import annotations
 
-from typing import Any, Sequence
-
-from agent_smith.models import SolutionOutput, StepMetrics
-from agent_smith.providers import CompletionResponse, ProviderPool
+from agent_smith.models import AgentLimits, SolutionOutput
+from agent_smith.providers import ProviderClient
 from agent_smith.sandbox import SandboxExecution, SandboxSession
 
 
@@ -40,116 +38,92 @@ def build_observation(
     return "\n".join(parts)
 
 
-def _build_step_metrics(
-    step_number: int,
-    completion: CompletionResponse,
-    sandbox_input: str,
-    sandbox_output: str,
-) -> StepMetrics:
-    """Recibir la generación y ejecución de un paso; devolver StepMetrics.
-
-    1. Numerar desde 1. Copiar texto bruto, código efectivamente enviado y observación.
-    2. completion contiene la suma de tokens y tiempos de TODOS los intentos de
-       este paso; retries = request_count - 1. No usar sólo la última petición.
-    3. Copiar URL pública sin credenciales y modelo. Si hubo fallo definitivo,
-       el proveedor conserva la misma información en last_completion; texto vacío
-       significa que no llegó texto, nunca una respuesta inventada.
-    4. Si completion.usage_complete es falso (campo interno pendiente descrito en
-       CompletionResponse), marcarlo expresamente en sandbox_output: los
-       enteros son subtotales conocidos, no el consumo total ni un cero medido.
-       El resultado final también debe fallar con ese aviso. No abre recursos.
-    """
-    raise NotImplementedError("Step metric construction is not implemented yet.")
-
-
-def _find_limit_error(
-    budget: dict[str, Any],
-    *,
-    before_request: bool = True,
-) -> str | None:
-    """Recibir presupuesto y fase; devolver error en inglés o None.
-
-    1. Leer limits, started_at, steps y los contadores del mismo budget compartido.
-       Comparar time.monotonic() con deadline; nunca reiniciar el reloj en el bucle.
-    2. Rechazar uso desconocido y totales estrictamente mayores que los límites.
-       No recortar los valores medidos para hacerlos encajar.
-    3. Si before_request=True, además impedir otro paso cuando len(steps) alcanza
-       max_iterations o no quedan tokens. complete revisa cada reintento sin
-       contarlo como otra iteración, incluyendo el historial reenviado.
-    4. Con before_request=False, permitir finalizar el último paso válido aunque
-       agote exactamente las iteraciones/tokens. Aplicar esta fase después de API,
-       antes del sandbox y antes de aceptar final_answer. Sin recursos propios.
-    """
-    raise NotImplementedError("Agent limit checks are not implemented yet.")
-
-
-def _build_solution_output(
-    *,
-    task_id: str,
-    benchmark: str,
-    success: bool,
-    solution: str,
-    system_prompt: str,
-    steps: Sequence[StepMetrics],
-    total_requests: int,
-    total_time_seconds: float,
-    error: str | None,
-) -> SolutionOutput:
-    """Recibir resultado, pasos y métricas medidas; devolver SolutionOutput.
-
-    1. Copiar steps, iterations=len(steps), prompt íntegro y solución capturada.
-    2. Sumar los tokens de los pasos, incluidos intentos fallidos con uso conocido;
-       deben coincidir con budget. Usar total_requests real, incluidos reintentos.
-    3. total_time_seconds se mide desde la entrada CLI hasta acabar la limpieza:
-       el adaptador actualiza el resultado provisional del bucle tras cerrar todo.
-    4. En fallo conservar pasos, tiempos y error; no sustituirlos por el placeholder
-       del CLI. Si falta uso, success=False, solution="" y error aclara que los
-       tokens son subtotales conocidos y que no se puede certificar el presupuesto.
-    5. El esquema público exige enteros y no tiene un indicador de uso desconocido:
-       esta política explícita de fallo no equivale a métricas completas; seleccionar
-       proveedores verificables antes de evaluar. No crea recursos.
-    """
-    raise NotImplementedError("Solution output construction is not implemented yet.")
-
-
-def run_agent_loop(
+async def run_agent_loop(
     *,
     task_id: str,
     benchmark: str,
     system_prompt: str,
     task_prompt: str,
-    providers: ProviderPool,
+    provider: ProviderClient,
     sandbox: SandboxSession,
-    budget: dict[str, Any],
+    limits: AgentLimits,
+    started_at: float,
 ) -> SolutionOutput:
-    """Recibir tarea, prompts, conexiones abiertas y budget; devolver resultado.
+    """Run one sequential task and preserve real observations and partial metrics.
 
-    Presupuesto común pendiente: un diccionario, sin otra jerarquía. El CLI toma
-    started_at=time.monotonic() al entrar en main, antes de leer JSON/configuración.
-    El adaptador crea budget con started_at, deadline=started_at+limits.max_time_seconds,
-    limits, steps=[], total_requests=0, input_tokens=0, output_tokens=0 y
-    usage_complete=True. Proveedor y bucle comparten ese objeto; los tiempos de
-    preparación, herramientas, esperas y limpieza forman parte de la misma tarea.
-
-    1. Crear historial con los prompts exactos. Revisar _find_limit_error antes
-       de pedir una respuesta. complete(messages, budget=budget) revisa también
-       cada envío y recibe el tiempo y la salida disponibles.
-    2. Cada ciclo con alguna petición produce UN StepMetrics, incluso si agota
-       reintentos. complete mantiene last_completion y los contadores antes de
-       propagar fallos. Sin petición no inventar un paso. Registrar primero las
-       métricas recibidas; revisarlas antes de ejecutar contenido del modelo.
-    3. Extraer con extract_agent_code usando el response_format del modelo activo;
-       sólo python está implementado hoy. Sin código, guardar sandbox_input="" y
-       diagnóstico. Con código, ejecutar sandbox.execute(code, deadline=deadline).
-    4. Crear observación real con build_observation y completar el paso. Añadir
-       al historial la respuesta del asistente y esa observación, incluidos avisos.
-    5. Revisar de nuevo límites antes de continuar o aceptar final_answer; no
-       declarar éxito si la llamada o ejecución terminó fuera de presupuesto.
-       final_answer no demuestra aprobar tests ocultos: success expresa al agente.
-    6. Devolver _build_solution_output. En errores ordinarios conservar el paso
-       parcial y el error; KeyboardInterrupt/SystemExit suben al adaptador para
-       limpieza y al CLI. No cerrar conexiones prestadas ni hacer otra petición
-       para explicar un fallo. El adaptador cierra sus recursos incluso si se acaba
-       el tiempo, registra el tiempo real de limpieza y convierte exceso en fallo.
+    The caller supplies open resources and the task's original monotonic start
+    time. This pending loop owns its counters and borrows the provider and sandbox.
+    The benchmark adapter closes resources and updates the final elapsed time.
     """
+    # 1. Calcular deadline=started_at+limits.max_time_seconds. No iniciar otro reloj:
+    #    started_at viene del CLI, antes de cargar la tarea o configurar conexiones.
+    #    Crear messages con system_prompt como system y task_prompt como user.
+    # 2. Crear variables locales: steps=[], total_requests=0, entrada_total=0,
+    #    salida_total=0, uso_completo=True, solucion="", error=None y success=False.
+    #    Son del bucle: no compartir un diccionario mutable con el proveedor.
+    # 3. Antes de cada iteración comprobar el tiempo, len(steps) y tokens acumulados.
+    #    Si se ha alcanzado max_iterations o no quedan tokens, terminar con error.
+    #    Si cualquier petición anterior dejó usage incompleto, no pedir otra.
+    # 4. Calcular entrada_restante y salida_restante restando esos totales a limits.
+    #    Esperar await provider.complete(messages, max_input_tokens=...,
+    #    max_output_tokens=..., deadline=deadline). No iniciar otra generación en
+    #    paralelo. El proveedor verifica cada reintento con esos valores restantes.
+    # 5. La respuesta de complete agrupa TODOS los intentos de esta iteración.
+    #    Añadir request_count, input_tokens y output_tokens a los totales UNA vez.
+    #    Actualizar uso_completo con su indicador. No volver a sumar al crear steps
+    #    ni leer un contador mutable dentro del proveedor.
+    # 6. Si request_count=0, guardar el error de preparación/límite y salir sin crear
+    #    un paso ficticio. Si hubo envío, crear un StepMetrics numerado len(steps)+1:
+    #    copiar tokens, latencia, URL/modelo, llm_output=text y retries; empezar con
+    #    sandbox_input="" y sandbox_output="" porque aún no se ha ejecutado nada.
+    #    Añadirlo a steps inmediatamente para conservarlo si la fase siguiente falla.
+    # 7. Si completion.error existe, poner el error real en sandbox_output y terminar.
+    #    Si faltan tokens, aclarar en ese paso y en el error final que los totales son
+    #    sólo subtotales conocidos. No presentar un cero de relleno como medición.
+    #    También detenerse si el tiempo o los tokens reales excedieron el presupuesto;
+    #    conservar las cifras medidas enteras, sin recortarlas al límite.
+    # 8. Extraer código con extract_agent_code(completion.text,
+    #    response_format=provider.config.response_format). Desempaquetar la tupla
+    #    recibida como code, feedback; no acceder a atributos del resultado.
+    #    Un formato pendiente debe dar un error honesto, nunca Python inventado.
+    # 9. Sin código válido: execution=None y observación=build_observation(None,
+    #    feedback). No llamar al trabajador. Esta iteración sí consume tokens y paso.
+    #    Con código: guardar el texto extraído íntegro en step.sandbox_input y llamar
+    #    await sandbox.execute(code, deadline=deadline) una sola vez. Las variables
+    #    del trabajador continúan del paso anterior. No repetir bloques para repararlas.
+    # 10. Construir observación con build_observation(execution, feedback) y guardarla
+    #     en step.sandbox_output. Incluye stdout/stderr parciales, errores y timeout.
+    #     No sustituir una salida vacía por un resultado esperado o tests inventados.
+    # 11. Añadir al historial la respuesta original como assistant y la observación
+    #     real como user. Mantener su orden Thought -> Code -> Observation. La petición
+    #     siguiente volverá a contar todo este historial como entrada.
+    # 12. Si execution no es None y trae final_answer, guardar ya el texto íntegro
+    #     en solucion para conservarlo también si falla una comprobación posterior.
+    #     Tras ejecutar, comprobar tiempo/tokens otra vez. Un límite agotado EXACTAMENTE
+    #     puede permitir finalizar el último paso válido; superarlo impide éxito.
+    #     No declarar error por len(steps)==max_iterations antes de examinar la
+    #     respuesta final de ese paso, pero tampoco iniciar un paso adicional.
+    # 13. Sólo si execution no es None, comprobar worker_failed; si es True,
+    #     guardar fallo y terminar. Conservar su
+    #     salida parcial: el trabajador perdido no se reinicia para recuperar variables.
+    #     Un error ordinario del código o timeout no fatal se devuelve al modelo como
+    #     observación para la siguiente iteración, si queda presupuesto.
+    # 14. Si execution no es None y execution.final_answer no es None, examinar
+    #     la respuesta final ya conservada en solucion.
+    #     Aceptar success=True sólo sin error de ejecución, consumo desconocido,
+    #     timeout o exceso de presupuesto. final_answer es local, nunca llamada MCP.
+    #     Este éxito significa que el agente finalizó; los tests del evaluador deciden
+    #     si la solución resuelve la tarea. No truncar ni reformatear código o patch.
+    # 15. Capturar errores ordinarios de extracción o ejecución: conservar el paso
+    #     abierto y explicar el fallo, sin otra llamada LLM para redactarlo. Terminar
+    #     con resultado parcial. No convertir KeyboardInterrupt/SystemExit en éxito;
+    #     el finally del adaptador libera recursos si la interrupción se propaga.
+    # 16. Crear un único SolutionOutput al terminar: copiar IDs, benchmark, prompt
+    #     completo, solucion, success, error y steps; iterations=len(steps), contadores
+    #     locales y tiempo monotonic()-started_at. En fallo conservar la solución
+    #     parcial real, si llegó, sin fabricar un patch o una respuesta alternativa.
+    #     Si usage es incompleto, success=False y error debe decirlo expresamente.
+    # 17. Devolver el resultado sin cerrar recursos prestados. El adaptador cerrará
+    #     sandbox/MCP y, en SWE-bench, Docker; después actualizará tiempo y fallos de
+    #     cierre. No reejecutar la tarea ni poner métricas a cero tras un fallo.
     raise NotImplementedError("The agent loop is not implemented yet.")

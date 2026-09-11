@@ -29,7 +29,7 @@ DOCKER_READY = docker_image_is_ready()
 
 
 def test_build_test_program() -> None:
-    """The helper must put the solution before imports and assertions."""
+    """The helper must place imports before the solution and assertions."""
     program = build_test_program(
         code="def add(a, b):\n    return a + b",
         test_imports=["import math"],

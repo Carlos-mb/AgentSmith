@@ -1,4 +1,4 @@
-"""Tests for sandbox configuration loading."""
+"""Contract tests for sandbox configuration loading, which is still pending."""
 
 import pytest
 

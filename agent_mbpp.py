@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from agent_smith.io import load_model, write_model
-from agent_smith.models import MBPPTaskInput, SolutionOutput
+from agent_smith.io import load_model
+from agent_smith.models import MBPPTaskInput
 
 
 def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -45,47 +45,32 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def build_pending_result(task: MBPPTaskInput) -> SolutionOutput:
-    """Build a valid temporary result before the MBPP agent exists."""
-    return SolutionOutput(
-        task_id=str(task.task_id),
-        benchmark="mbpp",
-        success=False,
-        solution="",
-        system_prompt="",
-        iterations=0,
-        total_requests=0,
-        total_input_tokens=0,
-        total_output_tokens=0,
-        total_time_seconds=0.0,
-        error="MBPP agent execution is not implemented yet.",
-    )
-
-
 def main(argv: Sequence[str] | None = None) -> int:
-    """Load an MBPP task and write its solution output file."""
+    """Validate CLI input and report that real MBPP execution is still pending."""
+    # Pseudocódigo para conectar el agente cuando sus partes estén implementadas:
+    # 1. Al entrar, antes de parsear o leer JSON, tomar started_at=time.monotonic().
+    #    Ese instante pasa al adaptador para incluir la preparación en el límite total.
+    # 2. Conservar parse_arguments y load_model: sus validaciones ya funcionan.
+    # 3. Sustituir únicamente el NotImplementedError por una llamada a
+    #    asyncio.run(run_mbpp_agent(task, args, started_at=started_at)).
+    #    Usar un solo asyncio.run para toda la tarea; el adaptador abre, utiliza y
+    #    cierra MCP dentro de esa misma ejecución asíncrona. No hacerlo por paso.
+    # 4. Recibir el SolutionOutput real y escribirlo con write_model(args.output,
+    #    result), incluido un resultado de tarea fallida con sus métricas parciales.
+    #    No escribir un resultado de ejemplo mientras la ejecución siga pendiente.
+    # 5. Tras escribir, devolver 0 para indicar que el CLI produjo el resultado;
+    #    result.success expresa si el agente finalizó. Devolver 1 ante errores que
+    #    impiden cargar la tarea, iniciar el programa o escribir su salida.
+    # 6. Mantener errores legibles por stderr sin secretos. Una interrupción debe
+    #    dejar que el finally del adaptador cierre sus recursos antes de propagarse.
     args = parse_arguments(argv)
 
     try:
         task = load_model(args.task_file, MBPPTaskInput)
-
-        # Pseudocódigo pendiente (conservar placeholder hasta implementar):
-        # 1. Al entrar en main, ANTES de parsear/cargar, tomar started_at=monotonic().
-        # 2. Tras leer task, llamar run_mbpp_agent(task, args, started_at=started_at).
-        #    El adaptador es dueño del presupuesto y de todas sus conexiones.
-        # 3. Escribir el resultado real incluso en fallo. Si se interrumpe, el
-        #    adaptador adjunta partial_result a KeyboardInterrupt/SystemExit tras
-        #    cerrar recursos; escribirlo si existe y volver a lanzar la excepción.
-        # 4. No reemplazar métricas reales por build_pending_result. Los ceros
-        #    actuales describen sólo un agente NO ejecutado, no una solución.
-        result = build_pending_result(task)
-
-        write_model(args.output, result)
+        raise NotImplementedError("MBPP agent execution is not implemented yet.")
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-
-    return 0
 
 
 if __name__ == "__main__":

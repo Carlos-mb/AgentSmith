@@ -1,4 +1,4 @@
-"""Tests for final_answer and agent observations."""
+"""Observation tests and two contract checks for the pending final_answer function."""
 
 import pytest
 

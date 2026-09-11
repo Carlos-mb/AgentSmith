@@ -1,20 +1,16 @@
-"""Extracción Python actual y conversores pendientes según los modelos elegidos."""
+"""Extract Python blocks and describe the pending JSON tool-call conversion."""
 
 import ast
 
 
 def extract_python_code(llm_output: str) -> tuple[str, str]:
-    """Recibe texto del modelo y devuelve (codigo, diagnostico).
+    """Return Python source and extraction feedback without executing it.
 
-    Formato principal: un bloque cerrado ```python ... ```; también se acepta
-    la etiqueta py ya existente. El marcador <end_code> va DESPUÉS del cierre:
-    la API puede retirarlo como stop sin romper el bloque. No usar ``` como stop.
-    Se busca el bloque, se extrae su cuerpo y se comprueba con ast.parse, sin
-    ejecutarlo. Una respuesta vacía, un bloque ausente o sin cierre y una sintaxis
-    inválida devuelven código vacío con un diagnóstico distinto. Una extracción
-    correcta devuelve diagnóstico vacío. No se reparan ni recuperan bloques.
-    Python sin etiqueta o sin bloque no forma parte del soporte actual.
-    No crea recursos que haya que cerrar.
+    Accept a closed python or py fenced block and check its body with ast.parse.
+    Empty responses, missing blocks, missing closing fences, and invalid syntax
+    return empty source with a diagnostic. Valid source has empty feedback.
+    Raw Python and unlabelled blocks are unsupported; malformed blocks are not
+    repaired. An optional <end_code> marker belongs after the closing fence.
     """
 
     code: str = ""
@@ -51,69 +47,69 @@ def extract_python_code(llm_output: str) -> tuple[str, str]:
     return code, feedback
 
 
-def extract_xml_code(llm_output: str) -> str:
-    """Pendiente; implementar sólo si un modelo elegido necesita este XML.
-
-    1. Recibir la respuesta de ese modelo y documentar su formato real. XML es
-       un ejemplo del subject, no otro formato obligatorio por sí mismo.
-    2. Leer invoke y parameter con ElementTree; rechazar DTD y entidades,
-       nombres no identificadores públicos Python y parámetros repetidos.
-    3. Convertir valores a tipos básicos conforme al formato documentado del
-       modelo; no adivinar tipos con eval. Serializarlos con repr para emitir
-       print(herramienta(**argumentos)): el resultado real debe llegar a stdout
-       y desde allí a la observación. Sólo asignarlo a result no basta.
-    4. Devolver código o "" si no es este formato; lanzar ValueError con
-       diagnóstico si el formato reconocido es inválido. No abre recursos.
-    """
-    raise NotImplementedError("XML tool-call extraction is not implemented yet.")
-
-
 def extract_json_hermes_code(llm_output: str) -> str:
-    """Pendiente; implementar sólo si un modelo elegido necesita JSON/Hermes.
+    """Convert complete JSON/Hermes tool calls into Python source.
 
-    1. Recibir texto y localizar los payloads tool_call documentados para ese
-       modelo. Decodificarlos con json.loads, nunca eval.
-    2. Exigir name identificador Python público y arguments objeto con claves
-       string; representar los valores básicos mediante repr.
-    3. Emitir print(herramienta(**argumentos)) por llamada para que el resultado
-       real pase a la observación del sandbox.
-    4. Devolver código o "" si no es este formato; si está mal formado, propagar
-       ValueError al extractor común. No abre recursos. Si el proveedor retira
-       </tool_call> al usarlo como stop, definir su recuperación con feedback
-       antes de activar ese stop; no declarar que ya está soportado.
+    Pending implementation. Each <tool_call> payload must contain a string name
+    and an arguments object. Return empty source when no call is present and
+    raise ValueError for recognized malformed calls. Conversion performs no I/O.
     """
+    # Pseudocódigo detallado:
+    # 1. Buscar bloques completos <tool_call>...</tool_call> en el texto recibido,
+    #    conservando su orden. Es el único formato no Python previsto inicialmente;
+    #    no añadir XML/ReAct hasta que los modelos utilizados lo necesiten.
+    # 2. Si no aparece ninguna apertura ni cierre, devolver "". Si aparece una
+    #    etiqueta incompleta, un cierre suelto o anidamiento, elevar ValueError con
+    #    un diagnóstico concreto. No inventar el cierre ni reparar el contenido.
+    #    El stop configurado debe ir después del cierre, nunca retirarlo.
+    # 3. Extraer el texto de cada bloque y decodificarlo con json.loads. Rechazar
+    #    JSON inválido, valores no finitos y una raíz que no sea objeto. No usar
+    #    eval, exec, pickle ni ejecutar valores para averiguar qué significan.
+    # 4. Leer name y arguments. Exigir name string no vacío; arguments debe ser un
+    #    objeto con claves string. Conservar sus valores JSON (null -> None,
+    #    true/false -> bool, números, texto, listas y objetos). No comprobar aquí
+    #    parámetros obligatorios ni tipos del esquema MCP: lo harán SDK/servidor.
+    # 5. Convertir name y arguments a literales Python con repr. Para una
+    #    herramienta emitir print(mcp_call_tool(<literal name>, <literal args>)).
+    #    Así nombres con guiones o iguales a un builtin siguen siendo accesibles
+    #    y el resultado real llega a stdout; no insertar name como código Python.
+    # 6. Reservar el nombre final_answer para la función local: exigir únicamente
+    #    arguments={"answer": texto} y emitir final_answer(<literal del texto>).
+    #    No convertirlo en llamada MCP ni permitir llamadas posteriores a esa
+    #    entrega dentro del mismo bloque de respuesta.
+    # 7. Unir las instrucciones con saltos de línea; devolver sólo código, sin
+    #    delimitadores Markdown ni observaciones inventadas. No contactar al MCP
+    #    durante la conversión y no ejecutar el resultado aquí.
+    # 8. Si falla una llamada reconocida, rechazar la respuesta completa con
+    #    ValueError, sin ejecutar un prefijo válido. El selector añade el feedback
+    #    y ast.parse; el bucle enviará el Python al sandbox cuando corresponda.
     raise NotImplementedError("JSON tool-call extraction is not implemented yet.")
-
-
-def extract_react_code(llm_output: str) -> str:
-    """Pendiente; implementar sólo si un modelo elegido necesita ReAct.
-
-    1. Recibir texto y leer Action / Action Input conforme al formato comprobado
-       del modelo; no usar una Observation inventada por el modelo como real.
-    2. Exigir nombre identificador público y argumentos JSON objeto; no añadir
-       fallback automático a texto libre ni ejecutar valores para interpretarlos.
-    3. Emitir print(herramienta(**argumentos)) usando repr para los literales.
-    4. Devolver código o "" si el formato está ausente; lanzar ValueError si se
-       reconoce pero es inválido. El llamante explica el error. Sin recursos.
-    """
-    raise NotImplementedError("ReAct tool-call extraction is not implemented yet.")
 
 
 def extract_agent_code(
     llm_output: str, response_format: str = "python"
 ) -> tuple[str, str]:
-    """Pendiente: seleccionar el formato configurado, sin cascada de intentos.
+    """Select the configured extractor and return source with honest feedback.
 
-    1. Recibir respuesta y response_format del proveedor seleccionado. Para
-       python devolver extract_python_code(llm_output), conservando su feedback.
-    2. Añadir mediante if/elif sólo los conversores necesarios para los modelos
-       que se comparen. XML, JSON/Hermes y ReAct anteriores son candidatos
-       pendientes, no tres entregables independientes. No anunciar compatibilidad
-       multiformato hasta implementar y probar los formatos realmente utilizados.
-    3. Rechazar formatos sin soporte con ("", diagnóstico). Para uno soportado,
-       convertir y validar el Python con ast.parse, nunca ejecutarlo aquí.
-    4. Devolver (código, aviso del formato convertido y de cualquier recuperación
-       expresamente soportada), o ("", diagnóstico de ValueError/SyntaxError).
-       El bucle añade siempre el aviso a la observación. No abre recursos.
+    Pending implementation. Python remains the primary format; JSON/Hermes is
+    the first planned conversion. Unsupported or malformed formats must return
+    an explicit diagnostic, without fallback or automatic repair.
     """
+    # Pseudocódigo detallado:
+    # 1. Recibir el texto bruto y response_format de la configuración activa.
+    #    Con "python", devolver directamente extract_python_code(llm_output);
+    #    conservar su código y feedback, sin cambiar el extractor ya útil.
+    # 2. Con "json_hermes", llamar extract_json_hermes_code sólo cuando esté
+    #    implementado. Hoy sigue pendiente: no capturar NotImplementedError y
+    #    transformarlo en código vacío ni anunciar soporte que aún no existe.
+    # 3. Para otro valor devolver ("", diagnóstico que nombre el formato no
+    #    soportado). No probar una cascada de extractores ni adivinar el modelo.
+    # 4. Si el conversor reconoce una llamada inválida y eleva ValueError,
+    #    devolver ("", mensaje del error). Si devuelve "", explicar que no se
+    #    encontró un bloque JSON/Hermes completo. Nunca devolver éxito ficticio.
+    # 5. Con Python convertido, llamar ast.parse. Ante SyntaxError, devolver código
+    #    vacío y mensaje/línea del error; no ejecutarlo ni repararlo automáticamente.
+    # 6. Devolver (código, "JSON/Hermes tool calls converted to Python.") cuando
+    #    todo sea válido. El bucle añade siempre este aviso a la observación real.
+    #    No copiar al feedback ninguna Observation propuesta por el modelo.
     raise NotImplementedError("Multi-format code extraction is not implemented yet.")

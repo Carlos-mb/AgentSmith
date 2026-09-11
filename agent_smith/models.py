@@ -79,20 +79,19 @@ class SandboxConfig(BaseModel):
 
 
 class AgentLimits(BaseModel):
-    """Límites de una tarea completa; conservar el modelo y sus campos.
+    """Cumulative limits for one task, including setup, MCP waits, and cleanup.
 
-    Pseudocódigo pendiente:
-    1. El adaptador crea límites del benchmark y los coloca en budget (agent_loop).
-    2. El CLI toma started_at antes de leer JSON; deadline incluye preparación,
-       bucle, peticiones/reintentos, MCP y limpieza, sin reinicios del reloj.
-    3. Comprobar consumo acumulado antes/después de pedir API y antes de ejecutar
-       o aceptar respuesta final. No confundir agotar con exceder el último paso.
-    4. Mantener max_iterations configurable sin superar subject VI.1: MBPP
-       10/6.000/1.500/120 s; SWE-bench 30/300.000/10.000/900 s. Coinciden con
-       moulinette/moulinette/models.py. Su README conserva límites MBPP antiguos.
-    5. No crea recursos. Las métricas incompletas se comunican como fallo explícito,
-       no como ceros de consumo real; política en ProviderPool.complete.
+    The shared agent loop owns its counters. The provider receives remaining
+    limits as values and returns usage without mutating the loop's state.
     """
+
+    # El CLI toma started_at con monotonic antes de leer archivos. El adaptador
+    # calcula deadline=started_at+max_time_seconds; no reinicia el reloj al entrar
+    # al bucle. El tiempo incluye preparación, reintentos, herramientas y cierre.
+    # Comprobar los límites antes/después de cada petición y antes de aceptar
+    # final_answer. Si falta usage, informar fallo y subtotales conocidos.
+    # Límites subject VI.1 y moulinette/models.py: MBPP 10/6000/1500/120 s;
+    # SWE-bench 30/300000/10000/900 s. El README de moulinette está desactualizado.
 
     max_iterations: int = Field(..., gt=0)
     max_input_tokens: int = Field(..., ge=0)

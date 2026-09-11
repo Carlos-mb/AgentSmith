@@ -1,150 +1,171 @@
-"""Thin SWE-bench adapter and task-container lifecycle."""
+"""Describe the pending SWE-bench adapter and its task container lifecycle."""
 
 from __future__ import annotations
 
 import argparse
-from typing import Any
 
 from agent_smith.models import AgentLimits, SolutionOutput, SWEBenchTaskInput
 
 
 class SWEEnvironment:
-    """Own exactly one Docker container for a SWE-bench task."""
+    """Own exactly one Docker container for one SWE-bench task.
+
+    Lifecycle methods are pending and use explicit start/close calls. The
+    container holds the target checkout, not the generated Python interpreter.
+    """
 
     def __init__(self, task: SWEBenchTaskInput, *, deadline: float) -> None:
-        """Recibir tarea y deadline total; guardar estado sin contactar Docker.
-
-        1. Guardar imagen, eval_script, ID y deadline. Inicializar cliente/contenedor
-           a None; conservar sólo la referencia del contenedor creado por esta instancia.
-        2. No iniciar/pullar nada aquí ni al importar. No recibe claves LLM.
-        3. Devolver None; los recursos futuros pertenecen a este objeto.
-        """
+        """Store task data and initialize resource references without contacting Docker."""
+        # 1. Guardar task y deadline en la instancia. Usar docker_image y eval_script
+        #    exactamente como llegan en task; no inferir una imagen desde instance_id.
+        # 2. Inicializar self.client=None y self.container=None. Conservar únicamente
+        #    el contenedor que llegue a crear esta instancia, nunca recursos globales.
+        # 3. No descargar imágenes, abrir Docker ni leer claves LLM en el constructor.
+        #    El adaptador podrá guardar la referencia antes de llamar a start.
         raise NotImplementedError("SWE-bench environment setup is not implemented yet.")
 
     def start(self) -> None:
-        """Crear el contenedor exacto de la tarea; devolver None cuando esté listo.
-
-        1. Abrir cliente Docker con tiempo restante. Obtener imagen exacta de task;
-           si falta, descargarla dentro de deadline al implementar el agente, no en
-           esta revisión. Si no queda tiempo, fallar antes de crear más recursos.
-        2. Crear y arrancar contenedor persistente con tail -f /dev/null, sin red,
-           sin privilegios, montajes del host, socket Docker ni credenciales LLM.
-        3. Confirmar /testbed, git, Python y timeout de GNU disponibles. Los helpers
-           ejecutan allí sus órdenes y limitan su tiempo al deadline compartido.
-        4. Si falla cualquier preparación, cerrar cliente y eliminar sólo el contenedor
-           que se acaba de crear, incluso si start falló. Informar también del fallo
-           de limpieza. Docker del testbed no implementa el sandbox del Python generado.
-        """
+        """Start the supplied task image and verify its required testbed tools."""
+        # 1. Calcular tiempo_restante=self.deadline-monotonic(); si no queda tiempo,
+        #    elevar error antes de contactar Docker. Abrir cliente con timeout acotado
+        #    por ese tiempo. Recalcularlo antes de cada operación que pueda bloquear.
+        # 2. Buscar task.docker_image exacta. Si no existe, descargar esa imagen con
+        #    tiempo limitado. No usar otra imagen de respaldo ni construir un host
+        #    alternativo de ejecución; si falla la descarga, la tarea falla.
+        # 3. Crear un único contenedor con comando persistente, por ejemplo tail -f
+        #    /dev/null, red desactivada y sin privilegios, montajes del host, socket
+        #    Docker ni claves LLM. Guardar self.container antes de arrancarlo.
+        # 4. Arrancarlo y comprobar /testbed, git, Python y GNU timeout mediante exec
+        #    dentro de ESE contenedor. Las órdenes deben caber en el deadline total.
+        #    Si falta un requisito, informar cuál; no ejecutar el fallback en el host.
+        # 5. No reinstalar dependencias ni cambiar el checkout sin una necesidad de la
+        #    tarea. El contenedor suministrado ya es el entorno de SWE-bench.
+        # 6. Ante error, conservar el recurso creado para que finally del adaptador
+        #    llame close. No borrar contenedores de otras tareas ni ocultar el fallo.
+        #    Este proceso no recibe el código Python generado ni sustituye su sandbox.
         raise NotImplementedError("SWE-bench container startup is not implemented yet.")
 
     def mcp_environment(self) -> dict[str, str]:
-        """Devolver variables del servidor para este contenedor, sin claves LLM.
-
-        1. Exigir contenedor propio en marcha. Devolver AGENT_SMITH_CONTAINER_ID,
-           AGENT_SMITH_TESTBED=/testbed, AGENT_SMITH_EVAL_SCRIPT exacto y
-           AGENT_SMITH_DEADLINE con el deadline monotonic del coordinador en este host.
-        2. MCPClient añade sólo el entorno necesario para Python/Docker; no copiar
-           os.environ entero ni pasar estas variables al trabajador no confiable.
-        3. No crea recursos ni expone cliente/objetos Docker a la ejecución del modelo.
-        """
+        """Return the server variables needed to access this task's own container."""
+        # 1. Exigir que self.container exista y esté arrancado; si no, elevar error.
+        # 2. Crear un diccionario con AGENT_SMITH_CONTAINER_ID=self.container.id,
+        #    AGENT_SMITH_TESTBED="/testbed", AGENT_SMITH_EVAL_SCRIPT=task.eval_script
+        #    y AGENT_SMITH_DEADLINE=str(self.deadline).
+        # 3. Conservar el script íntegro, incluidos saltos de línea. No confundirlo
+        #    con el nombre de un archivo del host ni convertirlo en otro comando.
+        # 4. Devolver sólo ese diccionario. El adaptador/MCPClient prepara además el
+        #    entorno mínimo para arrancar Python y contactar Docker. Las claves LLM
+        #    y los objetos cliente/contenedor no se transfieren al trabajador generado.
         raise NotImplementedError("SWE-bench MCP environment export is not implemented yet.")
 
     def close(self) -> None:
-        """Cerrar cliente y eliminar únicamente el contenedor creado por este objeto.
-
-        1. Si no existe, no hacer nada. Conservar su ID también ante fallo de start.
-        2. Pedir stop con gracia corta y remove(force=True) en finally; intentar ambas
-           operaciones aunque una falle. Cerrar el cliente al final.
-        3. Informar errores de limpieza añadiéndolos al fallo original; sin error previo,
-           elevar error de limpieza. En interrupciones informar por stderr y propagar.
-        4. Nunca enumerar/borrar contenedores ajenos. No omitir limpieza por agotar
-           deadline: registrar todo el tiempo real y fallo si excede el límite.
-        """
+        """Stop and remove only the owned task container, then close its Docker client."""
+        # 1. Si self.container existe, intentar detenerlo con una gracia corta.
+        #    Si ya estaba parado o eliminado, tratar sólo esa ausencia como cierre
+        #    completado; un error de permisos/conexión no equivale a éxito.
+        # 2. En finally, intentar remove(force=True), aunque stop haya fallado. Así
+        #    se recoge también un contenedor creado cuyo start no llegó a completarse.
+        # 3. En otro finally, cerrar self.client si existe. Dejar las referencias
+        #    cerradas vacías; si no se logró borrar el contenedor, conservar su ID en
+        #    el error para que el usuario pueda localizarlo, sin tocar recursos ajenos.
+        # 4. Comunicar fallos de limpieza al adaptador, que los añade al error original.
+        #    No suprimir errores de stop/remove/close ni declarar limpieza ficticia.
+        # 5. Usar timeouts cortos para estas operaciones incluso al agotarse deadline.
+        #    La limpieza sigue siendo obligatoria y su tiempo cuenta en el resultado.
         raise NotImplementedError("SWE-bench environment cleanup is not implemented yet.")
-
-    def __enter__(self) -> "SWEEnvironment":
-        """Llamar start y devolver self. Si start falla, éste limpia lo creado.
-        """
-        raise NotImplementedError("SWE-bench context entry is not implemented yet.")
-
-    def __exit__(
-        self,
-        exception_type: type[BaseException] | None,
-        exception: BaseException | None,
-        traceback: Any,
-    ) -> None:
-        """Llamar close sin suprimir la excepción recibida; devolver None.
-
-        Con error previo, conservarlo y hacer visible cualquier fallo adicional de cierre.
-        """
-        raise NotImplementedError("SWE-bench context exit is not implemented yet.")
 
 
 def build_swebench_system_prompt(
     mcp_manual: str, *, response_format: str = "python",
 ) -> str:
-    """Recibir manual descubierto; devolver prompt de SWE-bench en inglés.
-
-    1. Explicar Thought -> Code -> Observation y pegar el manual de herramientas.
-    2. Ejemplificar búsqueda/lectura con print, edición mínima, comprobación de
-       tests reales y final_answer(get_patch()); esperar observación entre pasos.
-    3. Describir bloque Python cerrado y <end_code>, y sólo otros formatos
-       implementados para el modelo. final_answer es función local del sandbox.
-    4. Pedir verificación con run_tests y lectura del feedback. Ni la palabra
-       passed ni exit_code=0 prueban resolución del evaluador; no inventar resultados.
-    5. Prohibir soluciones externas, PRs, issues, parches memorizados y acceso
-       fuera del contexto. Promover explorar antes de editar. Sin recursos.
-    """
+    """Build English SWE-bench instructions with the discovered tool manual."""
+    # 1. Describir Thought -> Code -> Observation, variables persistentes y print
+    #    para obtener información real. Incluir mcp_manual íntegro con sus firmas.
+    # 2. Explicar un ejemplo pequeño de trabajo: buscar un símbolo, leer el archivo,
+    #    formular hipótesis, editar lo necesario y ejecutar tests. Cada decisión debe
+    #    basarse en observaciones anteriores, no en salidas supuestas del ejemplo.
+    # 3. Pedir explorar el checkout antes de editar y comparar el resultado de tests
+    #    antes/después. run_tests utiliza el script recibido por la tarea; una palabra
+    #    "passed" en stdout no acredita por sí sola que el evaluador acepte el parche.
+    # 4. Al finalizar, obtener el diff completo con get_patch y usar
+    #    final_answer(get_patch()). final_answer es local al sandbox, nunca herramienta
+    #    MCP; el texto entregado debe ser el diff sin Markdown ni explicaciones.
+    # 5. Para response_format="python", pedir ```python ... ``` seguido de
+    #    <end_code>. Otros formatos se describen sólo si su conversión ya funciona;
+    #    si el seleccionado sigue pendiente, dar error al construir el prompt.
+    # 6. Prohibir soluciones externas, PRs, issues, parches memorizados sin explorar
+    #    y accesos fuera del contexto. No asegurar que tests locales equivalen al examen.
+    # 7. Devolver una cadena en inglés; no llamar herramientas ni ejecutar ejemplos.
     raise NotImplementedError("The SWE-bench system prompt is not implemented yet.")
 
 
 def build_swebench_task_prompt(task: SWEBenchTaskInput) -> str:
-    """Recibir SWEBenchTaskInput; devolver el texto de la tarea para el modelo.
-
-    1. Delimitar ID, repo y problem_statement completos como datos de la tarea.
-    2. Añadir hints sólo si existen. No añadir gold patches ni material externo.
-    3. Pedir inspección del checkout y verificación antes del parche. Sin E/S.
-    """
+    """Format the supplied issue context without adding external solution material."""
+    # 1. Identificar la tarea con instance_id y añadir repo si se recibió.
+    # 2. Incluir problem_statement íntegro y delimitado como descripción de la tarea.
+    #    Añadir hints_text solamente cuando contenga texto.
+    # 3. Pedir inspección del checkout /testbed y comprobación de la hipótesis antes
+    #    de entregar el diff. No incorporar gold patches ni soluciones por instance_id.
+    # 4. Devolver texto en inglés. docker_image y eval_script son datos de ejecución
+    #    del adaptador/servidor, no órdenes que deba ejecutar aquí el coordinador.
     raise NotImplementedError("The SWE-bench task prompt is not implemented yet.")
 
 
 def _build_swebench_limits(max_iterations: int) -> AgentLimits:
-    """Recibir max_iterations; devolver AgentLimits de SWE-bench.
-
-    1. Rechazar valor no positivo; usar min(max_iterations, 30).
-    2. Fijar entrada/salida acumuladas 300.000/10.000 y 900 segundos totales.
-    3. Coinciden subject VI.1.2 y MetricsLimits.swebench_defaults local.
-       No abre recursos ni interpreta límites por petición como límites totales.
-    """
+    """Return the SWE-bench cumulative limits with the requested iteration ceiling."""
+    # 1. Rechazar max_iterations <= 0 con ValueError; no convertirlo en éxito vacío.
+    # 2. Crear AgentLimits con max_iterations=min(max_iterations, 30),
+    #    max_input_tokens=300000, max_output_tokens=10000 y max_time_seconds=900.
+    # 3. Devolver el modelo. Son límites por tarea completa, no por petición LLM.
+    #    Coinciden con subject VI.1.2 y MetricsLimits.swebench_defaults local.
     raise NotImplementedError("SWE-bench limit construction is not implemented yet.")
 
 
-def run_swebench_agent(
+async def run_swebench_agent(
     task: SWEBenchTaskInput,
     args: argparse.Namespace,
     *,
     started_at: float,
 ) -> SolutionOutput:
-    """Recibir tarea, args y started_at del CLI; devolver SolutionOutput medido.
-
-    1. Construir límites y el mismo budget descrito en agent_loop.run_agent_loop.
-       Su reloj incluye carga JSON, configuración, Docker y conexiones MCP.
-    2. Crear ProviderPool.from_environment con selección CLI y ruta opcional
-       AGENT_SMITH_MODELS_CONFIG. Leer AGENT_SMITH_SANDBOX_CONFIG si se proporciona.
-    3. Abrir SWEEnvironment(task, deadline=deadline); abrir MCPClient stdio con
-       sys.executable, mcp_tools_swebench.py y mcp_environment(). start/discover
-       usan deadline; comprobar las nueve herramientas sobre la lista descubierta.
-    4. Abrir SandboxSession con start(deadline=deadline); construir prompts pasando
-       providers.config.response_format al constructor del system prompt y llamar
-       run_agent_loop(..., budget=budget). No dar Docker ni secretos al trabajador.
-    5. Conservar patch capturado intacto. Un patch vacío significa ningún cambio:
-       devolver fallo de tarea aparte, sin insertar explicaciones en solution.
-       El validador local exige aspecto de diff y después evalúa; no certificar éxito
-       sólo por el formato, por passed o por exit_code. No copiar su evaluador.
-    6. Cerrar sandbox, MCP y Docker en finally, incluso ante interrupción. Medir
-       total_time_seconds después del cierre; exceso/fallo de limpieza impide éxito.
-    7. Conservar métricas/pasos/errores de preparación y del bucle; no sustituirlos
-       por placeholders. KeyboardInterrupt/SystemExit se propagan tras limpieza,
-       con acceso del CLI al registro parcial de budget (ver pseudocódigo de main).
-    """
+    """Prepare one testbed, await the shared loop, and preserve the complete patch."""
+    # 1. Construir limits y deadline=started_at+limits.max_time_seconds. Inicializar
+    #    environment=None, client=None, sandbox=None, result=None y system_prompt="".
+    #    Toda preparación, petición, MCP y limpieza cuenta desde started_at del CLI.
+    # 2. En try, crear ProviderClient.from_environment con la selección CLI y ruta
+    #    AGENT_SMITH_MODELS_CONFIG opcional. Usar load_sandbox_config con
+    #    AGENT_SMITH_SANDBOX_CONFIG o None para defaults. Mantener claves en el host.
+    # 3. Crear environment=SWEEnvironment(task, deadline=deadline) y llamar start().
+    #    Son operaciones Docker acotadas por su propio timeout; no mover comandos del
+    #    testbed al host. Conservar environment aunque falle start para poder cerrarlo.
+    # 4. Crear MCPClient con [sys.executable, ruta absoluta de mcp_tools_swebench.py]
+    #    y environment.mcp_environment(). Añadir sólo lo necesario para Python/Docker.
+    #    Hacer session, manual = await client.start(deadline=deadline) en ESTA tarea.
+    # 5. Comprobar que están las nueve herramientas obligatorias en manual.tools.
+    #    Crear SandboxSession(config, mcp_session=session, manual=manual) y esperar
+    #    await sandbox.start(); el supervisor toma prestado MCP y conserva la sesión.
+    #    Si se usa anyio.fail_after para todo el recorrido, entrar ANTES de abrir
+    #    MCP y cerrar MCP ANTES de salir de ese scope, también al fallar. Nunca
+    #    usar wait_for sobre start/close MCP ni sobre el adaptador completo.
+    # 6. Construir ambos prompts con los datos reales; pasar response_format activo
+    #    al system prompt. Si ya no queda tiempo, terminar sin ninguna petición LLM.
+    # 7. Esperar run_agent_loop(task_id=task.instance_id, benchmark="swebench",
+    #    system_prompt=..., task_prompt=..., provider=provider, sandbox=sandbox,
+    #    limits=limits, started_at=started_at). Es el mismo bucle utilizado en MBPP.
+    # 8. Conservar result.solution como patch íntegro. Un patch vacío no contiene una
+    #    solución: marcar fallo y describirlo en error, sin insertar prosa en solution.
+    #    No limpiar, truncar ni rehacer el diff. Su aspecto no certifica tests ocultos.
+    # 9. Si falla la preparación antes del bucle, crear un resultado de fallo con el
+    #    error real y tiempo medido. Sólo en esa fase los contadores de peticiones y
+    #    tokens son cero conocidos. Los fallos del bucle conservan sus pasos parciales.
+    # 10. En finally, cerrar en orden: await sandbox.close(), await client.close(),
+    #     environment.close(), sólo si se crearon. Intentar todos los cierres aunque
+    #     uno falle. MCP se cierra en la tarea que lo abrió y antes de abandonar el scope
+    #     exterior de timeout. No omitir Docker por haberse acabado el tiempo;
+    #     respetar el orden de los contextos SDK también al cancelar.
+    # 11. Añadir errores de cierre al error original y marcar success=False. Tras la
+    #     limpieza, actualizar total_time_seconds=monotonic()-started_at; si supera
+    #     900 s, marcar también fallo de tiempo conservando datos medidos.
+    # 12. KeyboardInterrupt/SystemExit se propagan después de limpiar. Si se devuelve
+    #     un resultado ordinario, main escribe ese resultado real y sus métricas;
+    #     nunca sustituirlo por un placeholder ni repetir la tarea para recuperar estado.
     raise NotImplementedError("The SWE-bench agent is not implemented yet.")

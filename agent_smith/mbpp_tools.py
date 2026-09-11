@@ -45,16 +45,18 @@ def run_mbpp_tests(
     test_list: list[str],
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Run a candidate MBPP solution against its public tests in Docker.
+    """Run public MBPP tests in Docker and report execution and cleanup failures.
 
-    Pendiente al conectar el agente: leer AGENT_SMITH_DEADLINE sólo en el
-    servidor de confianza. Acotar creación, arranque, wait y lectura de logs
-    por el tiempo total restante, reservando tiempo para detener/eliminar el
-    contenedor propio. Un wait timeout por sí solo no cubre toda la operación.
-    Al cancelar MCP, terminar también la ejecución Docker y conservar logs;
-    no implementar esa integración hasta que exista el presupuesto del agente.
-    Los tests de Docker no sustituyen el sandbox del Python generado por el LLM.
+    The per-test wait timeout is implemented. End-to-end task deadline handling
+    during creation, startup, logs, and cleanup remains pending integration.
     """
+    # Pendiente al conectar el agente: leer AGENT_SMITH_DEADLINE sólo en el
+    # servidor de confianza. Acotar creación, arranque, wait y lectura de logs
+    # por el tiempo total restante, reservando tiempo para detener/eliminar el
+    # contenedor propio. Un wait timeout por sí solo no cubre toda la operación.
+    # Al cancelar MCP, terminar también la ejecución Docker y conservar logs.
+    # No compartir un presupuesto mutable con el bucle. Los tests Docker no
+    # sustituyen los controles del trabajador que ejecuta Python del modelo.
     if not code.strip():
         return {
             "success": False,
