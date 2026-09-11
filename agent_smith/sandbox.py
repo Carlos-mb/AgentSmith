@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Callable
+from agent_smith.io import load_model
 
 from agent_smith.models import SandboxConfig
 
@@ -42,30 +43,27 @@ class FinalAnswerSignal(BaseException):
 
 
 def final_answer(answer: str) -> None:
-    """Signal completion with a string without calling any MCP server."""
-    # 1. Comprobar que answer es str; en otro caso lanzar TypeError en inglés.
-    #    No convertir automáticamente objetos: el resultado público es texto.
-    # 2. Lanzar FinalAnswerSignal(answer); no devolver un valor al código usuario.
-    #    Su argumento conserva todo el texto, incluso una cadena vacía.
-    # 3. El trabajador captura exclusivamente esta señal como respuesta final.
-    #    No guardar estado global, imprimir la respuesta ni pasarla por el límite
-    #    de logs. En MBPP contiene código; en SWE-bench contiene el patch íntegro.
-    raise NotImplementedError("Final answer signaling is not implemented yet.")
+    """Stop execution and carry the complete final answer."""
+    if not isinstance(answer, str):
+        raise TypeError("Final answer must be a string.")
+
+    raise FinalAnswerSignal(answer)
 
 
 def load_sandbox_config(path: str | Path | None) -> SandboxConfig:
-    """Load and validate sandbox settings, preserving an empty path allowlist."""
-    # 1. Si path es None, construir SandboxConfig con los defaults existentes.
-    #    Si hay ruta, usar io.load_model(path, SandboxConfig), sin duplicar JSON.
-    # 2. Comprobar max_execution_time_seconds > 0 y max_memory_mb > 0;
-    #    ante valores inválidos lanzar RuntimeError indicando el campo.
-    # 3. Conservar authorized_imports y allowed_directories tal como se cargan.
-    #    En particular [] no se sustituye por los defaults ni por el directorio
-    #    actual. Las rutas se resolverán dentro del trabajador al preparar open.
-    # 4. Devolver la configuración. La lectura queda cerrada por load_model;
-    #    propagar sus errores de fichero/JSON/validación sin abrir procesos.
-    raise NotImplementedError("Sandbox configuration loading is not implemented yet.")
+    """Load sandbox settings and require positive resource limits."""
+    if path is None:
+        config = SandboxConfig()
+    else:
+        config = load_model(path, SandboxConfig)
 
+    if config.max_execution_time_seconds <= 0:
+        raise RuntimeError("max_execution_time_seconds must be positive.")
+
+    if config.max_memory_mb <= 0:
+        raise RuntimeError("max_memory_mb must be positive.")
+
+    return config
 
 def _is_import_allowed(module_name, patterns):
     """Check exact module names and patterns ending in .*."""
@@ -125,77 +123,78 @@ def _make_safe_import(authorized_imports):
 
 
 def _resolve_allowed_path(
-    path: str | Path,
-    allowed_directories: list[Path],
-) -> Path:
-    """Resolve a file path and require membership in an allowed directory."""
-    # 1. Aceptar únicamente str o Path; rechazar enteros (descriptores), bytes y
-    #    objetos arbitrarios con TypeError. No abrir todavía ningún fichero.
-    # 2. Convertir path a Path y llamar resolve(strict=False): resolver '..',
-    #    rutas relativas respecto al cwd del trabajador y enlaces ya existentes.
-    #    strict=False permite comprobar también un fichero aún por crear.
-    # 3. Para cada directorio autorizado, obtener igualmente su ruta resuelta.
-    #    Aceptar si candidate == root o candidate.is_relative_to(root).
-    #    No usar startswith: '/tmp/agent_extra' no pertenece a '/tmp/agent'.
-    # 4. Si ninguna raíz contiene candidate, lanzar PermissionError en inglés.
-    #    Una lista vacía siempre llega al rechazo. No crear ni autorizar rutas.
-    # 5. Devolver la ruta absoluta resuelta, que será la que abra el wrapper.
-    #    Los errores reales al resolver se propagan; no volver a la ruta original.
-    #    Límite asumido: esta comprobación no impide carreras si otro proceso
-    #    cambia un enlace entre la resolución y la apertura.
-    raise NotImplementedError("Allowed path resolution is not implemented yet.")
+        path: str | Path,
+        allowed_directories: list[Path],
+        ) -> Path:
+    """Resolve a path and require membership in an allowed directory."""
+    candidate = Path(path).resolve(strict=False)
+
+    for directory in allowed_directories:
+        root = directory.resolve(strict=False)
+        if candidate.is_relative_to(root):
+            return candidate
+
+    raise PermissionError(f"Filesystem access denied by sandbox: {candidate}")
 
 
 def _make_safe_open(allowed_directories: list[str]) -> Callable[..., Any]:
-    """Create a file opener restricted to resolved allowlisted directories."""
-    # 1. Resolver las raíces una vez, desde el trabajador; conservar una copia.
-    #    No crear los directorios ni sustituir [] por una raíz implícita.
-    # 2. Capturar el open original en el cierre, sin modificar builtins.open global.
-    # 3. Preparar restricted_open con la firma habitual de open: file, mode='r',
-    #    buffering=-1, encoding=None, errors=None, newline=None, closefd=True,
-    #    opener=None. Implementar ese cierre en el lugar indicado más abajo.
-    # 4. Devolver restricted_open. Sólo se inyectará en los builtins del usuario;
-    #    los accesos internos del supervisor y los del servidor MCP son distintos.
-    #    Esto no controla automáticamente todos los lectores de otras bibliotecas.
+    """Create a file opener restricted to allowed directories."""
+    allowed_paths = [
+        Path(directory).resolve(strict=False)
+        for directory in allowed_directories
+    ]
+
     def restricted_open(
         file, mode="r", buffering=-1, encoding=None, errors=None,
         newline=None, closefd=True, opener=None,
     ):
-        """Validate the path and reject options that bypass the restricted opener."""
-        # 1. Rechazar opener distinto de None y closefd distinto de True antes
-        #    de abrir; no aceptar descriptores aunque se pida closefd=True.
-        # 2. Validar mode: una sola operación r/w/a/x; '+' opcional y como máximo
-        #    un modo de texto o binario. Rechazar modos inválidos con ValueError.
-        #    Los modos de escritura siguen sujetos a la misma lista de raíces.
-        # 3. Obtener la ruta con _resolve_allowed_path(file, raíces_copiadas).
-        # 4. Pasar esa ruta y las opciones permitidas al open original. Dejar
-        #    que Python compruebe las combinaciones de encoding/newline/buffering.
-        #    No volver a pasar file ni reenviar un opener proporcionado por usuario.
-        # 5. Devolver el fichero abierto; el usuario lo cierra con with o close.
-        #    Propagar PermissionError, FileNotFoundError y demás errores reales.
-        raise NotImplementedError("Restricted file opening is not implemented yet.")
+        """Check access before opening the resolved path."""
+        if opener is not None:
+            raise ValueError("Custom openers are not allowed.")
 
-    raise NotImplementedError("Restricted opener construction is not implemented yet.")
+        if closefd is not True:
+            raise ValueError("closefd must be True.")
+
+        path = _resolve_allowed_path(file, allowed_paths)
+
+        return builtins.open(
+            path,
+            mode=mode,
+            buffering=buffering,
+            encoding=encoding,
+            errors=errors,
+            newline=newline,
+        )
+
+    return restricted_open
 
 
 def _make_safe_builtins(config: SandboxConfig) -> dict[str, Any]:
-    """Build the explicit builtin namespace for generated Python code."""
-    # 1. Crear un diccionario nuevo con nombres elegidos explícitamente, sin
-    #    copiar vars(builtins) para luego intentar quitar los peligrosos.
-    # 2. Incluir lo necesario para Python ordinario: print, len, range, enumerate,
-    #    zip, iter, next, sum, min, max, sorted, reversed, abs, round, all, any;
-    #    int, float, bool, str, bytes, list, tuple, dict, set, frozenset, object;
-    #    isinstance, issubclass, type, super, property, staticmethod, classmethod,
-    #    __build_class__ y excepciones comunes como Exception, ValueError,
-    #    TypeError, KeyError, IndexError, StopIteration y ZeroDivisionError.
-    #    Completar esta lista sólo cuando un comportamiento necesario lo requiera.
-    # 3. Asignar '__import__' a _make_safe_import(config.authorized_imports) y
-    #    'open' a _make_safe_open(config.allowed_directories).
-    # 4. No exponer eval, exec, compile, input, breakpoint, help, globals, locals,
-    #    vars ni acceso a clientes/sesiones. exec lo usa el trabajador de confianza.
-    # 5. Devolver el diccionario; no modificar los builtins del coordinador.
-    #    La introspección de Python impide prometer resistencia a código hostil.
-    raise NotImplementedError("Restricted builtins are not implemented yet.")
+    """Build the allowed builtins and attach restricted import and open."""
+    names = [
+        "print", "len", "range", "enumerate", "zip",
+        "iter", "next", "map", "filter",
+        "sum", "min", "max", "sorted", "reversed",
+        "abs", "round", "pow", "divmod", "all", "any",
+        "int", "float", "bool", "str", "bytes",
+        "list", "tuple", "dict", "set", "frozenset",
+        "chr", "ord", "repr",
+        "object", "isinstance", "issubclass", "type",
+        "super", "property", "staticmethod", "classmethod",
+        "__build_class__",
+        "Exception", "AssertionError", "ValueError", "TypeError",
+        "KeyError", "IndexError", "AttributeError", "NameError",
+        "RuntimeError", "NotImplementedError", "StopIteration",
+        "ZeroDivisionError", "ImportError", "OSError",
+        "FileNotFoundError", "PermissionError",
+        "MemoryError", "TimeoutError", "KeyboardInterrupt", "SystemExit",
+    ]
+
+    safe = {name: getattr(builtins, name) for name in names}
+    safe["__import__"] = _make_safe_import(config.authorized_imports)
+    safe["open"] = _make_safe_open(config.allowed_directories)
+
+    return safe
 
 
 def _apply_worker_limits(config: SandboxConfig) -> None:

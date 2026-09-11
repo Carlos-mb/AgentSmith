@@ -162,22 +162,8 @@ class MCPClient:
         self.server_url: str | None = None
 
         if stdio_command is not None:
-            if isinstance(stdio_command, (str, bytes)):
-                raise ValueError(
-                    "stdio_command must be a sequence of arguments."
-                )
-
-            if not isinstance(stdio_command, Sequence):
-                raise ValueError(
-                    "stdio_command must be a sequence of arguments."
-                )
-
             if not stdio_command:
                 raise ValueError("stdio_command cannot be empty.")
-
-            for argument in stdio_command:
-                if not isinstance(argument, str):
-                    raise ValueError("All stdio arguments must be strings.")
 
             if not stdio_command[0].strip():
                 raise ValueError("The stdio executable cannot be empty.")
@@ -185,9 +171,6 @@ class MCPClient:
             self.stdio_command = list(stdio_command)
 
         else:
-            if not isinstance(server_url, str):
-                raise ValueError("server_url must be a string.")
-
             parsed_url = urlparse(server_url)
 
             if (

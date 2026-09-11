@@ -5,10 +5,12 @@ stdout is reserved for them. The supervisor owns MCP and all external credential
 """
 
 from __future__ import annotations
-
 from typing import Any, Callable, TextIO
-
 from agent_smith.models import SandboxConfig
+import json
+from contextlib import redirect_stderr, redirect_stdout
+
+from agent_smith.sandbox import FinalAnswerSignal
 
 
 class WorkerProtocolError(BaseException):
@@ -16,61 +18,71 @@ class WorkerProtocolError(BaseException):
 
 
 def _send_message(stream: TextIO, message: dict[str, Any]) -> None:
-    """Write and flush one JSON protocol message to the original output stream."""
-    # 1. Serializar message con json.dumps y añadir exactamente un salto de línea.
-    #    Los saltos dentro de strings se escapan por JSON: no dividirlos a mano.
-    # 2. Escribir en stream, guardado antes de redirigir stdout del usuario, y
-    #    hacer flush para que el supervisor reciba el mensaje inmediatamente.
-    # 3. No usar print hacia stdout redirigido ni pickle. Si falla serialización
-    #    o escritura, lanzar WorkerProtocolError con la causa. Así execute_block
-    #    no lo confunde con un error ordinario del Python del usuario.
-    raise NotImplementedError("Worker JSON writing is not implemented yet.")
+    """Write and flush one JSON message."""
+    try:
+        stream.write(json.dumps(message) + "\n")
+        stream.flush()
+    except Exception as exc:
+        raise WorkerProtocolError(f"Could not send message: {exc}") from exc
 
 
 def _receive_message(stream: TextIO) -> dict[str, Any] | None:
-    """Read a JSON object from one line, returning None only on clean EOF."""
-    # 1. Leer una línea de stream. Si readline devuelve '', devolver None (EOF).
-    #    Una línea vacía '\n' es JSON inválido, no es fin normal de entrada.
-    # 2. Decodificar con json.loads y exigir dict con type string conocido por el
-    #    receptor. No aceptar instrucciones Python, pickle ni objetos de clases.
-    # 3. Devolver el diccionario. Cada consumidor comprueba los campos mínimos
-    #    de su mensaje y el orden esperado; no crear un validador RPC genérico.
-    # 4. Convertir fallos de lectura/JSON/tipo a WorkerProtocolError con la causa.
-    #    No ignorar líneas ni intentar recuperar un estado que se ha perdido.
-    raise NotImplementedError("Worker JSON reading is not implemented yet.")
+    """Read one JSON message, returning None at end of input."""
+    try:
+        line = stream.readline()
+        if line == "":
+            return None
+
+        message = json.loads(line)
+    except Exception as exc:
+        raise WorkerProtocolError(f"Could not read message: {exc}") from exc
+
+    if not isinstance(message, dict):
+        raise WorkerProtocolError("Expected a JSON object.")
+
+    if not isinstance(message.get("type"), str):
+        raise WorkerProtocolError("Message type must be a string.")
+
+    return message
 
 
 class WorkerOutput:
-    """Forward bounded user output immediately while counting omitted characters."""
+    """Send limited output and count omitted characters."""
 
     def __init__(self, stream: TextIO, max_characters: int = 12_000) -> None:
-        """Keep the protocol stream and initialize one block's output counters."""
-        # 1. Guardar el stream original, límite positivo, enviados=0 y omitidos=0.
-        # 2. Crear una instancia por bloque, compartida por stdout y stderr para
-        #    conservar el orden de sus escrituras y un único límite combinado.
-        # 3. No reservar un buffer del tamaño de toda la salida ni abrir ficheros.
-        raise NotImplementedError("Worker output initialization is not implemented yet.")
+        if max_characters <= 0:
+            raise ValueError("max_characters must be positive.")
+
+        self.stream = stream
+        self.max_characters = max_characters
+        self.sent = 0
+        self.omitted = 0
 
     def write(self, text: str) -> int:
-        """Send the permitted text prefix and count output beyond the log limit."""
-        # 1. Exigir str y calcular cuántos caracteres quedan dentro del límite.
-        # 2. Enviar únicamente el prefijo permitido mediante _send_message con
-        #    {'type':'output','text':prefijo}. Hacerlo ahora, no al acabar el bloque.
-        # 3. Aumentar enviados por el prefijo y omitidos por el resto; no guardar
-        #    ese resto. En la PRIMERA omisión enviar {'type':'truncated'} para que
-        #    el supervisor conozca el recorte incluso ante timeout/muerte. Si ya
-        #    se avisó, sólo seguir contando; no emitir avisos repetidos.
-        # 4. Devolver len(text), como espera un flujo de texto, aunque se haya
-        #    truncado. No aplicar esta función a respuestas finales ni datos MCP.
-        raise NotImplementedError("Worker output forwarding is not implemented yet.")
+        """Send the allowed text and report truncation once."""
+        remaining = self.max_characters - self.sent
+        chunk = text[:remaining]
+
+        if chunk:
+            _send_message(self.stream, {"type": "output", "text": chunk})
+            self.sent += len(chunk)
+
+        omitted = len(text) - len(chunk)
+        if omitted > 0:
+            if self.omitted == 0:
+                _send_message(self.stream, {"type": "truncated"})
+            self.omitted += omitted
+
+        return len(text)
 
     def flush(self) -> None:
-        """Flush the original protocol stream without emitting user output."""
-        # 1. Llamar al flush del stream original; print(..., flush=True) lo necesita.
-        # 2. Convertir errores del pipe a WorkerProtocolError. No emitir aquí
-        #    avisos de truncamiento: write lo señala y done aporta el contador.
-        raise NotImplementedError("Worker output flushing is not implemented yet.")
-
+        """Flush the stream used for JSON messages."""
+        try:
+            self.stream.flush()
+        except Exception as exc:
+            raise WorkerProtocolError(
+                f"Could not flush output: {exc}"
+            ) from exc
 
 def _request_mcp(
     input_stream: TextIO,
@@ -146,31 +158,36 @@ def execute_block(
     namespace: dict[str, Any],
     output_stream: TextIO,
 ) -> None:
-    """Execute a block in the shared namespace and emit its actual outcome."""
-    # 1. Crear WorkerOutput para este bloque. Redirigir stdout y stderr mediante
-    #    contextlib.redirect_stdout/redirect_stderr, guardando el canal original.
-    # 2. Ejecutar compile(code, '<sandbox>', 'exec') y exec con el MISMO namespace
-    #    para globals y locals. No copiarlo: funciones y variables deben persistir.
-    #    compile y exec pertenecen al trabajador de confianza, no a sus builtins.
-    # 3. Capturar FinalAnswerSignal antes que las demás excepciones; guardar su
-    #    string sin imprimir ni truncar. Una cadena vacía también es respuesta final.
-    # 4. Capturar Exception para errores normales de código; guardar tipo y mensaje
-    #    reales en error. No borrar variables definidas antes del fallo.
-    # 5. Capturar KeyboardInterrupt y SystemExit en una rama distinta sólo para
-    #    comunicarlos mediante control_exit (tipo y código JSON simple), y terminar
-    #    el trabajador. El supervisor debe volver a propagarlos a su llamante.
-    # 6. Al salir, restaurar stdout/stderr con los contextos, incluso con error.
-    #    WorkerProtocolError se propaga como fallo fatal; no intentar enviar
-    #    una observación normal por un canal que ya está roto.
-    # 7. Enviar done con final_answer, error, truncated y omitted; la salida ya fue
-    #    enviada por fragmentos y la primera omisión se anunció inmediatamente.
-    #    El supervisor añade el aviso final de recorte una sola vez. Para
-    #    control_exit no enviar además un done exitoso.
-    # 8. No imponer el timeout esperando en este proceso: el supervisor debe poder
-    #    terminarlo aunque esté atascado. Un fallo del protocolo es fatal, no una
-    #    excepción corriente que permita seguir leyendo mensajes desincronizados.
-    raise NotImplementedError("Worker block execution is not implemented yet.")
+    """Execute code in the shared namespace and send its result."""
+    output = WorkerOutput(output_stream)
+    answer = None
+    error = None
 
+    try:
+        with redirect_stdout(output), redirect_stderr(output):
+            exec(compile(code, "<sandbox>", "exec"), namespace, namespace)
+
+    except FinalAnswerSignal as exc:
+        answer = exc.args[0]
+
+    except (KeyboardInterrupt, SystemExit) as exc:
+        _send_message(output_stream, {
+            "type": "control_exit",
+            "exception": type(exc).__name__,
+            "code": getattr(exc, "code", None),
+        })
+        raise
+
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+
+    _send_message(output_stream, {
+        "type": "done",
+        "final_answer": answer,
+        "error": error,
+        "truncated": output.omitted > 0,
+        "omitted": output.omitted,
+    })
 
 def main() -> int:
     """Initialize once and consume sequential code blocks until shutdown or EOF."""

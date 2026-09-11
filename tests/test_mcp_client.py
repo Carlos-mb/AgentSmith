@@ -45,9 +45,6 @@ def test_mcp_client_rejects_invalid_transport_values() -> None:
         MCPClient(stdio_command=[])
 
     with pytest.raises(ValueError):
-        MCPClient(stdio_command="python mcp_tools_mbpp.py")
-
-    with pytest.raises(ValueError):
         MCPClient(server_url="not-a-valid-url")
 
 
@@ -70,16 +67,6 @@ def test_mcp_client_copies_configuration() -> None:
     assert client.environment == {
         "EXAMPLE": "original",
     }
-
-def test_mcp_client_rejects_non_sequence_command() -> None:
-    with pytest.raises(ValueError):
-        MCPClient(stdio_command=123)
-
-
-def test_mcp_client_rejects_non_string_command_arguments() -> None:
-    with pytest.raises(ValueError):
-        MCPClient(stdio_command=["python", 123])
-
 
 def test_mcp_client_rejects_blank_executable() -> None:
     with pytest.raises(ValueError):

@@ -38,12 +38,12 @@ def test_read_json_file_rejects_invalid_utf8(tmp_path):
         read_json_file(input_path)
 
 
-def test_read_json_file_rejects_json_array(tmp_path):
+def test_load_model_rejects_json_array(tmp_path):
     input_path = tmp_path / "task.json"
     input_path.write_text("[]", encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="Expected a JSON object"):
-        read_json_file(input_path)
+    with pytest.raises(RuntimeError, match="Invalid MBPPTaskInput"):
+        load_model(input_path, MBPPTaskInput)
 
 
 def test_load_model_rejects_missing_required_field(tmp_path):

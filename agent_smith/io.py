@@ -10,8 +10,8 @@ from pydantic import BaseModel, ValidationError
 ModelType = TypeVar("ModelType", bound=BaseModel)
 
 
-def read_json_file(path: str | Path) -> dict[str, Any]:
-    """Read a JSON object from a file."""
+def read_json_file(path: str | Path) -> Any:
+    """Read JSON data from a file."""
     file_path = Path(path)
 
     try:
@@ -28,9 +28,6 @@ def read_json_file(path: str | Path) -> dict[str, Any]:
     except OSError as exc:
         raise RuntimeError(f"Could not read input file: {file_path}: {exc}") \
             from exc
-
-    if not isinstance(data, dict):
-        raise RuntimeError(f"Expected a JSON object in: {file_path}")
 
     return data
 
