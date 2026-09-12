@@ -1,5 +1,9 @@
 """MCP server exposing the mandatory SWE-bench repository tools."""
 
+from agent_smith.logging_config import configure_logging, get_logger
+
+logger = get_logger('mcp_tools_swebench')
+
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -14,6 +18,7 @@ def read_file(filepath: str, start_line: int, end_line: int) -> str:
 
     Pending implementation. Ordinary tool errors are reported by the MCP SDK.
     """
+    logger.debug("Entrando en read_file")
     # Pseudocódigo detallado:
     # 1. Al implementarlo, importar agent_smith.swebench_tools en este módulo.
     #    Conservar este decorador @mcp.tool y esta firma: el SDK obtiene de ellos
@@ -25,6 +30,7 @@ def read_file(filepath: str, start_line: int, end_line: int) -> str:
     # 4. Dejar que los errores ordinarios lleguen al SDK para formar el error MCP.
     #    No ocultar NotImplementedError, KeyboardInterrupt ni SystemExit.
     # 5. No imprimir mensajes de depuración en stdout: es el transporte stdio.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The read_file MCP wrapper is not implemented yet.")
 
 
@@ -35,6 +41,7 @@ def edit_file(filepath: str, old_str: str, new_str: str) -> str:
     Pending implementation. Zero or multiple matches are rejected before
     writing; the subject does not specify this local multiplicity policy.
     """
+    logger.debug("Entrando en edit_file")
     # Pseudocódigo detallado:
     # 1. Al implementarlo, importar agent_smith.swebench_tools en este módulo.
     #    Conservar este decorador @mcp.tool y esta firma: el SDK obtiene de ellos
@@ -46,6 +53,7 @@ def edit_file(filepath: str, old_str: str, new_str: str) -> str:
     # 4. Dejar que los errores ordinarios lleguen al SDK para formar el error MCP.
     #    No ocultar NotImplementedError, KeyboardInterrupt ni SystemExit.
     # 5. No imprimir mensajes de depuración en stdout: es el transporte stdio.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The edit_file MCP wrapper is not implemented yet.")
 
 
@@ -55,6 +63,7 @@ def list_files(directory: str, pattern: str) -> list[str]:
 
     Pending implementation. Ordinary tool errors are reported by the MCP SDK.
     """
+    logger.debug("Entrando en list_files")
     # Pseudocódigo detallado:
     # 1. Al implementarlo, importar agent_smith.swebench_tools en este módulo.
     #    Conservar este decorador @mcp.tool y esta firma: el SDK obtiene de ellos
@@ -66,6 +75,7 @@ def list_files(directory: str, pattern: str) -> list[str]:
     # 4. Dejar que los errores ordinarios lleguen al SDK para formar el error MCP.
     #    No ocultar NotImplementedError, KeyboardInterrupt ni SystemExit.
     # 5. No imprimir mensajes de depuración en stdout: es el transporte stdio.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The list_files MCP wrapper is not implemented yet.")
 
 
@@ -75,6 +85,7 @@ def search_code(pattern: str, file_pattern: str) -> str:
 
     Pending implementation. Ordinary tool errors are reported by the MCP SDK.
     """
+    logger.debug("Entrando en search_code")
     # Pseudocódigo detallado:
     # 1. Al implementarlo, importar agent_smith.swebench_tools en este módulo.
     #    Conservar este decorador @mcp.tool y esta firma: el SDK obtiene de ellos
@@ -86,6 +97,7 @@ def search_code(pattern: str, file_pattern: str) -> str:
     # 4. Dejar que los errores ordinarios lleguen al SDK para formar el error MCP.
     #    No ocultar NotImplementedError, KeyboardInterrupt ni SystemExit.
     # 5. No imprimir mensajes de depuración en stdout: es el transporte stdio.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The search_code MCP wrapper is not implemented yet.")
 
 
@@ -96,6 +108,7 @@ def search_function_or_class_definition_in_code(name: str) -> str:
     Pending implementation. The initial search is textual and may also match
     apparent definitions inside multiline strings.
     """
+    logger.debug("Entrando en search_function_or_class_definition_in_code")
     # Pseudocódigo detallado:
     # 1. Al implementarlo, importar agent_smith.swebench_tools en este módulo.
     #    Conservar este decorador @mcp.tool y esta firma: el SDK obtiene de ellos
@@ -107,6 +120,7 @@ def search_function_or_class_definition_in_code(name: str) -> str:
     # 4. Dejar que los errores ordinarios lleguen al SDK para formar el error MCP.
     #    No ocultar NotImplementedError, KeyboardInterrupt ni SystemExit.
     # 5. No imprimir mensajes de depuración en stdout: es el transporte stdio.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The definition-search MCP wrapper is not implemented yet.")
 
 
@@ -117,6 +131,7 @@ def find_references(name: str, filepath: str, line: int) -> str:
     Pending implementation. Equal names may refer to different symbols and
     aliases may be missed; this is not complete semantic reference analysis.
     """
+    logger.debug("Entrando en find_references")
     # Pseudocódigo detallado:
     # 1. Al implementarlo, importar agent_smith.swebench_tools en este módulo.
     #    Conservar este decorador @mcp.tool y esta firma: el SDK obtiene de ellos
@@ -128,6 +143,7 @@ def find_references(name: str, filepath: str, line: int) -> str:
     # 4. Dejar que los errores ordinarios lleguen al SDK para formar el error MCP.
     #    No ocultar NotImplementedError, KeyboardInterrupt ni SystemExit.
     # 5. No imprimir mensajes de depuración en stdout: es el transporte stdio.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The find_references MCP wrapper is not implemented yet.")
 
 
@@ -137,6 +153,7 @@ def run_tests() -> dict[str, Any]:
 
     Pending implementation. Ordinary tool errors are reported by the MCP SDK.
     """
+    logger.debug("Entrando en run_tests")
     # Pseudocódigo detallado:
     # 1. Al implementarlo, importar agent_smith.swebench_tools en este módulo.
     #    Conservar este decorador @mcp.tool y esta firma: el SDK obtiene de ellos
@@ -149,6 +166,7 @@ def run_tests() -> dict[str, Any]:
     #    No ocultar NotImplementedError, KeyboardInterrupt ni SystemExit.
     # 5. No imprimir mensajes de depuración en stdout: es el transporte stdio.
     #    No deducir success por el código de salida ni por texto como "passed".
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The run_tests MCP wrapper is not implemented yet.")
 
 
@@ -158,6 +176,7 @@ def get_patch() -> str:
 
     Pending implementation. Ordinary tool errors are reported by the MCP SDK.
     """
+    logger.debug("Entrando en get_patch")
     # Pseudocódigo detallado:
     # 1. Al implementarlo, importar agent_smith.swebench_tools en este módulo.
     #    Conservar este decorador @mcp.tool y esta firma: el SDK obtiene de ellos
@@ -170,6 +189,7 @@ def get_patch() -> str:
     #    No ocultar NotImplementedError, KeyboardInterrupt ni SystemExit.
     # 5. No imprimir mensajes de depuración en stdout: es el transporte stdio.
     #    No truncar, hacer strip ni añadir texto al diff al devolverlo por MCP.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The get_patch MCP wrapper is not implemented yet.")
 
 
@@ -179,6 +199,7 @@ def run_command(command: str, workdir: str) -> dict[str, Any]:
 
     Pending implementation. Ordinary tool errors are reported by the MCP SDK.
     """
+    logger.debug("Entrando en run_command")
     # Pseudocódigo detallado:
     # 1. Al implementarlo, importar agent_smith.swebench_tools en este módulo.
     #    Conservar este decorador @mcp.tool y esta firma: el SDK obtiene de ellos
@@ -190,8 +211,12 @@ def run_command(command: str, workdir: str) -> dict[str, Any]:
     # 4. Dejar que los errores ordinarios lleguen al SDK para formar el error MCP.
     #    No ocultar NotImplementedError, KeyboardInterrupt ni SystemExit.
     # 5. No imprimir mensajes de depuración en stdout: es el transporte stdio.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The run_command MCP wrapper is not implemented yet.")
 
 
 if __name__ == "__main__":
+    configure_logging()
+    logger.info("Iniciando servidor MCP SWE-bench mediante mcp.run con transporte stdio")
     mcp.run(transport="stdio")
+    logger.info("Servidor MCP SWE-bench cerrado")

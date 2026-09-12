@@ -1,6 +1,7 @@
 """Tests for the MBPP test execution helper."""
 
 import docker
+import logging
 import pytest
 from docker.errors import DockerException, ImageNotFound
 from unittest.mock import Mock
@@ -86,7 +87,7 @@ def docker_client(monkeypatch: pytest.MonkeyPatch) -> Mock:
     container = client.containers.create.return_value
     container.wait.return_value = {"StatusCode": 0}
     container.logs.return_value = b""
-    monkeypatch.setattr("agent_smith.mbpp_tools.docker.from_env", lambda: client)
+    monkeypatch.setattr("agent_smith.mbpp_tools.docker.from_env", lambda **kwargs: client)
     return client
 
 
@@ -101,6 +102,23 @@ def test_failure_keeps_stdout_and_reports_truncation(docker_client: Mock) -> Non
     assert result["output"].startswith("progress\n")
     assert "Output truncated: 9 characters were removed" in result["output"]
     container.logs.assert_called_once_with(stdout=True, stderr=True)
+
+
+@pytest.mark.parametrize("timed_out", [False, True])
+def test_debug_keeps_full_docker_output_before_observation_truncation(docker_client, caplog, timed_out):
+    container = docker_client.containers.create.return_value
+    raw_output = "DOCKER_BEGIN\n" + "x" * MAX_OUTPUT_CHARACTERS + "\nDOCKER_END\n"
+    container.logs.return_value = raw_output.encode()
+    if timed_out:
+        container.wait.side_effect = TimeoutError("known timeout")
+    with caplog.at_level(logging.DEBUG, logger="agent_smith.mbpp_tools"):
+        result = run_mbpp_tests("print('known output')", [], [])
+    assert raw_output in caplog.text
+    assert "DOCKER_END" not in result["output"]
+    assert "Output truncated" in result["output"]
+    assert ("DOCKER SALIDA PARCIAL" in caplog.text) == timed_out
+    container.logs.assert_called_once_with(stdout=True, stderr=True)
+    container.remove.assert_called_once_with(force=True)
 
 
 @pytest.mark.parametrize("error_type", [TimeoutError, DockerException])
@@ -195,3 +213,28 @@ def test_keyboard_interrupt_propagates_after_cleanup(docker_client: Mock) -> Non
 
     container.remove.assert_called_once_with(force=True)
     docker_client.close.assert_called_once_with()
+
+
+def test_task_deadline_stops_before_container_creation(monkeypatch, docker_client):
+    monkeypatch.setenv("AGENT_SMITH_DEADLINE", "0")
+    result = run_mbpp_tests("pass", [], [])
+    assert not result["success"]
+    assert "deadline" in result["output"].lower()
+    docker_client.containers.create.assert_not_called()
+
+
+def test_task_deadline_limits_wait(monkeypatch, docker_client):
+    import time
+    monkeypatch.setenv("AGENT_SMITH_DEADLINE", str(time.monotonic() + 4))
+    result = run_mbpp_tests("pass", [], [], timeout_seconds=30)
+    assert result["success"]
+    assert 0 < docker_client.containers.create.return_value.wait.call_args.kwargs["timeout"] <= 2
+
+
+def test_creation_response_lost_checks_only_owned_name(docker_client):
+    docker_client.containers.create.side_effect = DockerException("connection lost")
+    run_mbpp_tests("pass", [], [])
+    name = docker_client.containers.create.call_args.kwargs["name"]
+    docker_client.containers.get.assert_called_once_with(name)
+    docker_client.containers.get.return_value.remove.assert_called_once_with(force=True)
+    docker_client.containers.list.assert_not_called()

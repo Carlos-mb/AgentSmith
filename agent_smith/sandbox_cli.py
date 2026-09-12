@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from agent_smith.logging_config import LoggingArgumentParser, configure_logging, get_logger
+
+logger = get_logger('agent_smith.sandbox_cli')
+
 import argparse
 import shlex
 from pathlib import Path
@@ -13,8 +17,9 @@ from agent_smith.sandbox import SandboxSession
 
 def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse sandbox command-line arguments."""
+    logger.debug("Entrando en parse_arguments")
 
-    parser = argparse.ArgumentParser(
+    parser = LoggingArgumentParser(
         description="Run the interactive sandbox."
     )
 
@@ -42,6 +47,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def _build_mcp_client(args: argparse.Namespace) -> MCPClient | None:
     """Build an MCP client from CLI arguments without connecting."""
+    logger.debug("Entrando en _build_mcp_client")
 
     if args.mcp_stdio is not None:
         command = shlex.split(args.mcp_stdio)
@@ -54,6 +60,7 @@ def _build_mcp_client(args: argparse.Namespace) -> MCPClient | None:
 
 async def run_repl(session: SandboxSession) -> int:
     """Read and execute persistent Python entries until exit or EOF."""
+    logger.debug("Entrando en run_repl")
     # 1. Leer input con prompt corto. Acumular líneas hasta que
     #    codeop.compile_command indique bloque completo; no ejecutarlo aquí.
     #    Ante SyntaxError, mostrar error, vaciar entrada y pedir otro bloque.
@@ -71,11 +78,13 @@ async def run_repl(session: SandboxSession) -> int:
     #    cierra trabajador y MCP. No convertirlas en errores corrientes del REPL.
     # 7. El input síncrono es inicialmente aceptable con una operación activa;
     #    no crear un hilo de MCP para esperar al usuario ni nuevas tareas del agente.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The interactive sandbox REPL is not implemented yet.")
 
 
 async def _run_sandbox(args: argparse.Namespace) -> int:
     """Own MCP and worker lifetimes in the same asynchronous task as the REPL."""
+    logger.debug("Entrando en _run_sandbox")
     # 1. Cargar config con load_sandbox_config(args.config) y construir el cliente
     #    opcional con _build_mcp_client. Preparar session=None para el finally.
     # 2. Dentro de try, si hay cliente, await client.start() devuelve sdk_session
@@ -89,11 +98,14 @@ async def _run_sandbox(args: argparse.Namespace) -> int:
     #    Todo este recorrido permanece en la misma tarea, incluidos contextos SDK.
     # 6. Mantener el error original y añadir diagnóstico de limpieza si lo hay.
     #    No usar context managers de SandboxSession ni inventar su método reset.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The asynchronous sandbox owner is not implemented yet.")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse CLI arguments and drive the asynchronous sandbox with graceful errors."""
+    configure_logging()
+    logger.debug("Entrando en main")
     # 1. Usar parse_arguments(argv), que ya está implementado.
     # 2. Ejecutar asyncio.run(_run_sandbox(args)) una sola vez y devolver su código.
     #    La apertura, uso y cierre de MCP ocurren dentro de esa misma coroutine.
@@ -101,4 +113,5 @@ def main(argv: Sequence[str] | None = None) -> int:
     #    No ocultar que una pieza sigue pendiente por NotImplementedError.
     # 4. KeyboardInterrupt y SystemExit se propagan después del cierre ya realizado
     #    por _run_sandbox. No dejar el trabajador vivo al abandonar el CLI.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The sandbox CLI is not implemented yet.")

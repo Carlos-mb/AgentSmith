@@ -1,7 +1,18 @@
-"""Configure one LLM provider and describe pending asynchronous requests."""
+"""One configurable HTTP client, measured usage, and bounded key rotation."""
 
 from __future__ import annotations
 
+from agent_smith.logging_config import get_logger, register_secrets
+
+logger = get_logger('agent_smith.providers')
+
+import asyncio
+import os
+import time
+from urllib.parse import urlparse
+
+import httpx
+from agent_smith.io import load_model
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping
@@ -17,8 +28,12 @@ class ProviderConfig(BaseModel):
     api_key_environment_variables: list[str] = Field(default_factory=list)
     timeout_seconds: float = Field(default=60.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
+    temperature: float = Field(default=0.1, ge=0, le=2)
     stop_sequences: list[str] = Field(default_factory=lambda: ["<end_code>"])
     response_format: str = "python"
+    reasoning_effort: str | None = None
+    reasoning_enabled: bool | None = None
+    max_output_per_request: int = Field(default=600, gt=0)
     output_limit_parameter: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
 
 
@@ -49,183 +64,248 @@ class CompletionResponse:
     error: str | None = None
 
 
-class ProviderClient:
-    """Keep one active model and rotate only its configured API keys.
+def estimate_input_tokens(messages: list[dict[str, str]]) -> int:
+    """Approximate preflight estimate, NEVER a measurement for result metrics.
 
-    Request methods are pending. The coordinator owns this object and its
-    credentials; neither the sandbox worker nor MCP servers receive them.
+    Adapt the reference client's characters/4 estimate, using UTF-8 bytes and
+    framing headroom. Actual usage is checked after every reply: this is not a
+    remote tokenizer and cannot guarantee its count before sending.
     """
+    logger.debug("Entrando en estimate_input_tokens")
+    estimate = 64 + sum((len(m["content"].encode("utf-8")) + 3) // 4 + 32 for m in messages)
+    logger.debug("Entrada estimada: %s tokens en %s mensajes; no es usage medido", estimate, len(messages))
+    return estimate
 
-    def __init__(
-        self,
-        config: ProviderConfig,
-        environment: Mapping[str, str] | None = None,
-    ) -> None:
-        """Prepare a model configuration, an API-key list, and the active index."""
-        # 1. Guardar una copia de config en self.config. No recibir una lista de
-        #    proveedores: from_environment ya habrá seleccionado uno.
-        # 2. Usar environment si se ha recibido, incluso si es un diccionario vacío;
-        #    sólo si vale None, consultar os.environ.
-        # 3. Recorrer config.api_key_environment_variables en su orden. Leer cada
-        #    valor del entorno elegido; omitir valores vacíos y duplicados.
-        #    Guardar los valores útiles únicamente en self.api_keys.
-        # 4. Si no queda ninguna clave, elevar un error de configuración que indique
-        #    los nombres esperados. No incluir nunca los valores secretos.
-        # 5. Inicializar self.key_index a 0. No abrir conexiones ni hacer peticiones.
-        #    No guardar presupuesto, métricas globales ni un resultado compartido.
-        raise NotImplementedError("Provider client initialization is not implemented yet.")
+
+class ProviderClient:
+    """Keep one provider and its keys; return metrics without shared budgets."""
+
+    def __init__(self, config: ProviderConfig, environment: Mapping[str, str] | None = None):
+        logger.debug("Entrando en ProviderClient.__init__")
+        self.config = config.model_copy(deep=True)
+        parsed = urlparse(config.api_url)
+        if (parsed.scheme != "https" and not (
+                parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1", "::1"))):
+            raise ValueError("Use HTTPS for remote providers.")
+        if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("Provider URL must not contain credentials, query or fragment.")
+        environment = os.environ if environment is None else environment
+        self.api_keys = list(dict.fromkeys(
+            environment[name] for name in config.api_key_environment_variables
+            if environment.get(name)
+        ))
+        if not self.api_keys:
+            logger.error("No hay claves configuradas para el proveedor")
+            raise RuntimeError("Missing API key; set one of: " + ", ".join(config.api_key_environment_variables))
+        self.key_index = 0
+        register_secrets(self.api_keys)
+        logger.info("Proveedor preparado: modelo=%s, claves disponibles=%s", config.model_name, len(self.api_keys))
 
     @classmethod
     def from_environment(
-        cls,
-        default_api_url: str,
-        default_model_name: str,
+        cls, default_api_url: str, default_model_name: str,
         config_path: str | Path | None = None,
         environment: Mapping[str, str] | None = None,
     ) -> "ProviderClient":
-        """Select one CLI model configuration and load its named environment keys."""
-        # 1. Si config_path existe como argumento, cargarlo con load_model y
-        #    ProvidersConfig. Buscar la coincidencia de api_url y model_name con
-        #    los dos argumentos CLI; exigir exactamente una coincidencia.
-        # 2. Si falta el archivo, el JSON es inválido o no existe esa selección,
-        #    informar del error. No cambiar de proveedor silenciosamente.
-        # 3. Sin config_path, crear la configuración con URL/modelo del CLI y los
-        #    nombres PROVIDER_API_KEY y PROVIDER_API_KEY_2 de .env.example.
-        #    Los nombres propios de un servicio se declaran en el JSON; no buscar
-        #    todas las variables que contengan KEY ni copiar claves de otros servicios.
-        # 4. Crear cls(configuracion_elegida, environment). Así el constructor
-        #    resuelve las claves y cada tarea tiene su índice independiente.
-        # 5. Devolver ese cliente. No probar claves mediante peticiones de pago o
-        #    gratuitas. Antes de elegir un modelo real hay que comprobar sus cuotas
-        #    gratuitas, parámetro de salida, stop y contrato de usage.
-        raise NotImplementedError("Environment provider loading is not implemented yet.")
+        logger.debug("Entrando en ProviderClient.from_environment")
+        if config_path is not None:
+            logger.debug("Buscando configuración explícita en %s", config_path)
+            configurations = load_model(config_path, ProvidersConfig)
+            matches = [c for c in configurations.providers
+                       if c.api_url.rstrip("/") == default_api_url.rstrip("/")
+                       and c.model_name == default_model_name]
+            if len(matches) != 1:
+                logger.error("La selección URL/modelo tiene %s coincidencias; se esperaba una", len(matches))
+                raise ValueError("Expected exactly one configuration matching CLI URL and model.")
+            config = matches[0]
+        else:
+            logger.debug("Sin archivo de modelos: usando configuración compatible por defecto")
+            config = ProviderConfig(
+                api_url=default_api_url, model_name=default_model_name,
+                api_key_environment_variables=["PROVIDER_API_KEY", "PROVIDER_API_KEY_2"],
+            )
+        return cls(config, environment)
 
     async def complete(
-        self,
-        messages: list[dict[str, str]],
-        *,
-        max_input_tokens: int,
-        max_output_tokens: int,
-        deadline: float,
+        self, messages: list[dict[str, str]], *, max_input_tokens: int,
+        max_output_tokens: int, deadline: float,
     ) -> CompletionResponse:
-        """Request one completion with bounded retries and return all measured usage.
+        logger.debug("Entrando en ProviderClient.complete")
+        input_tokens = output_tokens = requests = 0
+        elapsed_ms = 0.0
+        text = ""
+        model_name = self.config.model_name
+        error = None
+        usage_complete = True
+        for attempt in range(1 + self.config.max_retries):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                error = "Task deadline reached before LLM request."
+                break
+            if estimate_input_tokens(messages) > max_input_tokens - input_tokens:
+                error = "Remaining input budget is below the prompt estimate."
+                break
+            allowance = min(max_output_tokens - output_tokens, self.config.max_output_per_request)
+            if allowance <= 0:
+                error = "Output token budget exhausted."
+                break
+            payload = self._build_payload(messages, max_output_tokens=allowance)
+            logger.info(
+                "Petición LLM %s/%s: modelo=%s, clave índice=%s, salida máxima=%s, tiempo restante=%.2fs",
+                attempt + 1, 1 + self.config.max_retries, self.config.model_name,
+                self.key_index, allowance, remaining,
+            )
+            started = time.monotonic()
+            requests += 1
+            try:
+                status, body, retry_after = await self._send_request(
+                    payload, self.api_keys[self.key_index],
+                    min(remaining, self.config.timeout_seconds),
+                )
+            except (httpx.HTTPError, TimeoutError, ValueError) as exc:
+                elapsed_ms += (time.monotonic() - started) * 1000
+                usage_complete = False
+                error = f"LLM request failed ({type(exc).__name__}); token usage is unknown."
+                break
+            duration = (time.monotonic() - started) * 1000
+            logger.info("Respuesta HTTP %s recibida en %.1f ms", status, duration)
+            elapsed_ms += duration
+            response = self._parse_response(body, duration)
+            model_name = response.model_name
+            input_tokens += response.input_tokens
+            output_tokens += response.output_tokens
+            usage_complete = usage_complete and response.usage_complete
+            text = response.text
+            error = response.error
+            if status == 429:
+                self.key_index = (self.key_index + 1) % len(self.api_keys)
+                logger.warning("HTTP 429: siguiente índice de clave=%s; comprobando si es posible reintentar", self.key_index)
+            if status != 200:
+                error = f"Provider returned HTTP {status}."
+                details = body.get("error") if isinstance(body, dict) else None
+                if isinstance(details, dict) and isinstance(details.get("message"), str):
+                    message = details["message"]
+                    for key in self.api_keys:
+                        message = message.replace(key, "[redacted]")
+                    error += " " + message
+            if not usage_complete:
+                logger.error("Falta usage: se conserva el subtotal y no se reintenta con consumo desconocido")
+                error = (error or "Invalid provider usage.") + " Token totals are known subtotals only."
+                break
+            if input_tokens > max_input_tokens or output_tokens > max_output_tokens:
+                error = "Provider usage exceeded the remaining token budget."
+                break
+            if status == 200:
+                break
+            if status not in (429, 500, 502, 503, 504) or attempt == self.config.max_retries:
+                break
+            delay = min(max(retry_after or 0.5, 0), 5.0)
+            if time.monotonic() + delay >= deadline:
+                error = "Retry would exceed the task deadline."
+                break
+            logger.warning("Reintentando HTTP después de %.2fs; se mantiene el proveedor", delay)
+            await asyncio.sleep(delay)
+            logger.debug("Espera de %.2fs completada; pasando al siguiente intento HTTP", delay)
+        if error:
+            logger.error("Petición LLM detenida: %s", error)
+        logger.debug(
+            "Fin de complete: peticiones=%s, entrada=%s, salida=%s, usage completo=%s",
+            requests, input_tokens, output_tokens, usage_complete,
+        )
+        return CompletionResponse(
+            text, input_tokens, output_tokens, elapsed_ms, self.config.api_url,
+            model_name, max(0, requests - 1), requests, usage_complete, error,
+        )
 
-        Limits are remaining allowances passed by value. This method never
-        updates the caller's counters. Ordinary request failures are returned
-        in error so the loop can preserve partial metrics exactly once.
-        """
-        # 1. Crear contadores LOCALES de entrada, salida, tiempo HTTP y envíos a 0;
-        #    uso_completo=True, texto="" y error=None. No reiniciar contadores del
-        #    bucle ni modificar messages. El texto vacío significa que aún no llegó.
-        # 2. Antes de CADA envío, comprobar time.monotonic() < deadline y que quede
-        #    presupuesto de entrada y salida después de estos intentos locales.
-        #    El máximo de intentos es 1 + config.max_retries, incluso con una clave.
-        # 3. Contar todo el historial reenviado, incluidos system y manual, con el
-        #    conteo o cota documentada para el modelo elegido. Cada reintento vuelve
-        #    a consumir esa entrada. Si no cabe, terminar sin enviar ese intento.
-        #    PENDIENTE al elegir proveedor: verificar cómo obtener ese conteo;
-        #    caracteres/4 es una estimación, no garantiza el límite del subject.
-        #    Si no existe conteo o cota justificable, devolver error de configuración.
-        # 4. Calcular salida_restante=max_output_tokens-salida_local y crear el JSON
-        #    con _build_payload. El máximo debe cubrir también razonamiento conforme
-        #    al contrato del modelo; no tratar el límite como sólo texto visible.
-        # 5. Calcular timeout=min(config.timeout_seconds, deadline-monotonic()).
-        #    Justo antes de await _send_request, contar un envío e iniciar un reloj.
-        #    Medir su duración también si falla. Añadir esa duración una sola vez.
-        # 6. Si llega JSON, usar _parse_response para obtener texto/usage/error de
-        #    UN intento. Sumar los conteos disponibles a los contadores locales;
-        #    conservar uso_completo=False si cualquier intento tiene usage incompleto.
-        #    Conservar los valores reales aunque excedan el máximo solicitado.
-        # 7. Si faltan métricas tras timeout, respuesta inválida o fallo de transporte,
-        #    devolver fallo con subtotales conocidos. No inventar consumo cero ni
-        #    reintentar un gasto que no se puede contabilizar.
-        # 8. Ante rate limit/cuota agotada, avanzar self.key_index módulo len(api_keys).
-        #    Este cambio sólo afecta a claves del mismo modelo/proveedor. Para volver
-        #    a enviar, exigir intentos disponibles, consumo conocido y presupuesto.
-        #    Un rechazo sin usage cuenta como cero sólo si el contrato lo garantiza.
-        # 9. Para un 5xx temporal también se puede reintentar dentro del mismo límite.
-        #    No reintentar errores de argumentos o autenticación. Si Retry-After es
-        #    válido, esperar con await asyncio.sleep sólo si cabe antes de deadline.
-        # 10. Terminar tras éxito, error definitivo, límite o agotamiento de intentos.
-        #     Devolver CompletionResponse con los contadores LOCALES acumulados,
-        #     retries=max(0, envios-1), modelo/URL sin secretos, texto y error real.
-        #     Sin envíos, request_count=0 permite al bucle no inventar un paso.
-        # 11. No capturar KeyboardInterrupt/SystemExit ni cancelaciones para volver a
-        #     enviar. _send_request cierra sus recursos incluso en esas salidas.
-        #
-        # Incertidumbre del subject: exige rotación y registra retries, pero VI.2
-        # dice "No retries are allowed during examination". No repetir tareas;
-        # mantener max_retries configurable y aclarar los reintentos HTTP cuando
-        # estén disponibles los scripts de examen. Este esqueleto no los presupone.
-        raise NotImplementedError("Provider completion is not implemented yet.")
+    def _build_payload(self, messages, *, max_output_tokens: int) -> dict[str, Any]:
+        logger.debug("Entrando en ProviderClient._build_payload")
+        if max_output_tokens <= 0:
+            raise ValueError("max_output_tokens must be positive.")
+        payload = {
+            "model": self.config.model_name, "messages": messages,
+            self.config.output_limit_parameter: max_output_tokens,
+            "stream": False, "temperature": self.config.temperature,
+        }
+        if self.config.stop_sequences:
+            payload["stop"] = list(self.config.stop_sequences)
+        if self.config.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.config.reasoning_effort
+        if self.config.reasoning_enabled is not None:
+            payload["reasoning"] = {"enabled": self.config.reasoning_enabled}
+        if urlparse(self.config.api_url).hostname == "openrouter.ai":
+            # Ask OpenRouter to honor stop/output settings rather than discard them.
+            payload["provider"] = {"require_parameters": True}
+        logger.debug(
+            "Parámetros LLM: temperatura=%s, límite=%s, stop=%s, razonamiento enabled=%s/effort=%s",
+            self.config.temperature, max_output_tokens, self.config.stop_sequences,
+            self.config.reasoning_enabled, self.config.reasoning_effort,
+        )
+        return payload
 
-    def _build_payload(
-        self,
-        messages: list[dict[str, str]],
-        *,
-        max_output_tokens: int,
-    ) -> dict[str, Any]:
-        """Build the configured chat-completions JSON without sending it."""
-        # 1. Rechazar max_output_tokens <= 0. Copiar el modelo y messages completos
-        #    al diccionario JSON; no resumir el historial ni cambiar prompts aquí.
-        # 2. Usar config.output_limit_parameter como clave del máximo de salida.
-        #    Sus dos valores permitidos cubren las variantes configuradas; elegir
-        #    el compatible al preparar el modelo, sin probar parámetros al azar.
-        # 3. Si stop_sequences contiene valores, copiarlos al campo stop. Una lista
-        #    vacía omite ese campo para modelos que no lo admitan.
-        # 4. Python usa <end_code> después del cierre de tres backticks. La respuesta
-        #    debe conservar el cierre para que el extractor reciba un bloque completo.
-        #    response_format selecciona instrucciones/extracción; no enviarlo como
-        #    parámetro response_format del proveedor, que tiene otro significado.
-        # 5. No activar streaming ni añadir opciones de otros proveedores. Devolver
-        #    el diccionario sin incluir la clave API; irá sólo en Authorization.
-        raise NotImplementedError("Provider payload building is not implemented yet.")
+    async def _send_request(self, payload, api_key: str, timeout_seconds: float):
+        logger.debug("Entrando en ProviderClient._send_request")
+        endpoint = self.config.api_url.rstrip("/")
+        if not endpoint.endswith("/chat/completions"):
+            endpoint += "/chat/completions"
+        logger.debug("Enviando POST al proveedor; timeout=%.2fs; sin registrar cabeceras", timeout_seconds)
+        for number, message in enumerate(payload["messages"], start=1):
+            logger.debug(
+                "IA ENVIADO [mensaje %s, rol=%s]:\n%s",
+                number, message["role"], message["content"],
+            )
+        async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=False) as client:
+            response = await asyncio.wait_for(client.post(
+                endpoint, json=payload, headers={"Authorization": f"Bearer {api_key}"},
+            ), timeout=timeout_seconds)
+            logger.debug("IA RECIBIDO [HTTP %s, cuerpo completo]:\n%s", response.status_code, response.text)
+            try:
+                retry_after = float(response.headers.get("Retry-After", ""))
+            except ValueError:
+                retry_after = None
+            try:
+                body = response.json()
+            except ValueError:
+                body = {}
+                logger.warning("La respuesta HTTP no contiene JSON válido")
+            logger.debug("HTTP recibido y cuerpo decodificado; cerrando cliente HTTP")
+            return response.status_code, body, retry_after
 
-    async def _send_request(
-        self,
-        payload: dict[str, Any],
-        api_key: str,
-        timeout_seconds: float,
-    ) -> tuple[int, dict[str, Any], float | None]:
-        """Return HTTP status, decoded JSON, and an optional Retry-After delay."""
-        # 1. Usar un cliente HTTP asíncrono (httpx.AsyncClient ya está instalado por
-        #    MCP; declararlo como dependencia directa al implementar este módulo).
-        #    Abrirlo con async with, timeout_seconds y redirecciones desactivadas.
-        # 2. Construir el endpoint chat/completions desde self.config.api_url; enviar
-        #    payload como JSON y Authorization con la clave recibida. No imprimirla.
-        # 3. Usar HTTPS con proveedores remotos; permitir HTTP sólo para un servidor
-        #    local configurado. No reenviar Authorization a otra dirección.
-        # 4. Limitar la operación COMPLETA con asyncio.wait_for sobre la petición
-        #    HTTP: el timeout de lectura por fragmento solo no limita una respuesta
-        #    que llega muy despacio. Esto no afecta a la tarea propietaria de MCP.
-        # 5. Conservar el código de estado también en 429/5xx y decodificar el JSON
-        #    sin lanzar por HTTP antes de leer usage. Leer Retry-After como demora
-        #    si se puede interpretar; si no se puede, devolver None en ese campo.
-        # 6. Devolver (status, JSON, demora). Si falla el transporte o no hay JSON
-        #    válido, propagar el error para que complete preserve tiempo/envíos.
-        #    Al salir, cerrar respuesta y cliente en todas las rutas; nada de claves,
-        #    cabeceras privadas ni cuerpos completos de error en logs o excepciones.
-        raise NotImplementedError("Provider HTTP requests are not implemented yet.")
-
-    def _parse_response(
-        self,
-        payload: dict[str, Any],
-        request_time_ms: float,
-    ) -> CompletionResponse:
-        """Normalize one decoded attempt while preserving available token counts."""
-        # 1. Leer usage antes de exigir texto. Comprobar que prompt_tokens y
-        #    completion_tokens sean enteros no negativos, no booleanos.
-        # 2. Contar razonamiento una sola vez según el contrato verificado del modelo:
-        #    si ya está incluido en completion_tokens, no sumar su desglose otra vez.
-        # 3. Si un contador falta o es inválido, conservar los otros y marcar
-        #    usage_complete=False. El 0 usado para el campo ausente es un subtotal
-        #    vacío, no una afirmación de consumo nulo; error debe explicarlo.
-        # 4. Extraer choices[0].message.content como texto cuando esté disponible.
-        #    Un texto realmente vacío es válido para esta capa; el extractor dará
-        #    feedback. Si faltan estructura o tipo textual, conservar usage y añadir
-        #    un error legible sin copiar el cuerpo completo de la respuesta.
-        # 5. Devolver CompletionResponse de un intento: request_count=1, retries=0,
-        #    tiempo recibido, URL pública/modelo, texto, contadores e indicadores.
-        #    complete reúne estos resultados; sólo run_agent_loop suma ese total
-        #    al resultado de la tarea. No modificar estado ni abrir recursos aquí.
-        raise NotImplementedError("Provider response parsing is not implemented yet.")
+    def _parse_response(self, payload: dict[str, Any], request_time_ms: float) -> CompletionResponse:
+        logger.debug("Entrando en ProviderClient._parse_response")
+        text = ""
+        error = None
+        complete = True
+        counts = []
+        if not isinstance(payload, dict):
+            payload = {}
+        usage = payload.get("usage") or {}
+        if not isinstance(usage, dict):
+            usage = {}
+        for name in ("prompt_tokens", "completion_tokens"):
+            value = usage.get(name)
+            if type(value) is not int or value < 0:
+                complete = False
+                value = 0
+            counts.append(value)
+        try:
+            text = payload["choices"][0]["message"]["content"]
+            if not isinstance(text, str):
+                raise ValueError("Expected text content.")
+        except (KeyError, IndexError, TypeError, ValueError):
+            text = ""
+            error = "Provider response did not contain text content."
+        if not complete:
+            error = (error or "") + " Token usage is incomplete."
+        # Routers can choose a different model on each request. Preserve what
+        # the API actually reports; the configured ID remains the request target.
+        model_name = payload.get("model")
+        if not isinstance(model_name, str) or not model_name.strip():
+            model_name = self.config.model_name
+        logger.debug("Modelo solicitado=%s; modelo informado por la API=%s", self.config.model_name, model_name)
+        logger.debug("Usage: entrada=%s, salida=%s, completo=%s; texto=%s caracteres", counts[0], counts[1], complete, len(text))
+        if error:
+            logger.warning("Respuesta LLM no utilizable: %s", error)
+        return CompletionResponse(
+            text, counts[0], counts[1], request_time_ms, self.config.api_url,
+            model_name, 0, 1, complete, error,
+        )

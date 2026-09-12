@@ -7,7 +7,9 @@ name = "agent-smith"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "docker" },
+    { name = "httpx" },
     { name = "mcp", extra = ["cli"] },
     { name = "pydantic" },
 ]
@@ -19,7 +21,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.5,<5" },
     { name = "docker", specifier = "==7.1.0" },
+    { name = "httpx", specifier = ">=0.27,<1" },
     { name = "mcp", extras = ["cli"], specifier = "==1.26.0" },
     { name = "pydantic", specifier = ">=2.0,<3.0" },
 ]

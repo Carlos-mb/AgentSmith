@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from agent_smith.logging_config import get_logger
+
+logger = get_logger('agent_smith.swebench_agent')
+
 import argparse
 
 from agent_smith.models import AgentLimits, SolutionOutput, SWEBenchTaskInput
@@ -16,16 +20,19 @@ class SWEEnvironment:
 
     def __init__(self, task: SWEBenchTaskInput, *, deadline: float) -> None:
         """Store task data and initialize resource references without contacting Docker."""
+        logger.debug("Entrando en SWEEnvironment.__init__")
         # 1. Guardar task y deadline en la instancia. Usar docker_image y eval_script
         #    exactamente como llegan en task; no inferir una imagen desde instance_id.
         # 2. Inicializar self.client=None y self.container=None. Conservar únicamente
         #    el contenedor que llegue a crear esta instancia, nunca recursos globales.
         # 3. No descargar imágenes, abrir Docker ni leer claves LLM en el constructor.
         #    El adaptador podrá guardar la referencia antes de llamar a start.
+        logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
         raise NotImplementedError("SWE-bench environment setup is not implemented yet.")
 
     def start(self) -> None:
         """Start the supplied task image and verify its required testbed tools."""
+        logger.debug("Entrando en SWEEnvironment.start")
         # 1. Calcular tiempo_restante=self.deadline-monotonic(); si no queda tiempo,
         #    elevar error antes de contactar Docker. Abrir cliente con timeout acotado
         #    por ese tiempo. Recalcularlo antes de cada operación que pueda bloquear.
@@ -43,10 +50,12 @@ class SWEEnvironment:
         # 6. Ante error, conservar el recurso creado para que finally del adaptador
         #    llame close. No borrar contenedores de otras tareas ni ocultar el fallo.
         #    Este proceso no recibe el código Python generado ni sustituye su sandbox.
+        logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
         raise NotImplementedError("SWE-bench container startup is not implemented yet.")
 
     def mcp_environment(self) -> dict[str, str]:
         """Return the server variables needed to access this task's own container."""
+        logger.debug("Entrando en SWEEnvironment.mcp_environment")
         # 1. Exigir que self.container exista y esté arrancado; si no, elevar error.
         # 2. Crear un diccionario con AGENT_SMITH_CONTAINER_ID=self.container.id,
         #    AGENT_SMITH_TESTBED="/testbed", AGENT_SMITH_EVAL_SCRIPT=task.eval_script
@@ -56,10 +65,12 @@ class SWEEnvironment:
         # 4. Devolver sólo ese diccionario. El adaptador/MCPClient prepara además el
         #    entorno mínimo para arrancar Python y contactar Docker. Las claves LLM
         #    y los objetos cliente/contenedor no se transfieren al trabajador generado.
+        logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
         raise NotImplementedError("SWE-bench MCP environment export is not implemented yet.")
 
     def close(self) -> None:
         """Stop and remove only the owned task container, then close its Docker client."""
+        logger.debug("Entrando en SWEEnvironment.close")
         # 1. Si self.container existe, intentar detenerlo con una gracia corta.
         #    Si ya estaba parado o eliminado, tratar sólo esa ausencia como cierre
         #    completado; un error de permisos/conexión no equivale a éxito.
@@ -72,6 +83,7 @@ class SWEEnvironment:
         #    No suprimir errores de stop/remove/close ni declarar limpieza ficticia.
         # 5. Usar timeouts cortos para estas operaciones incluso al agotarse deadline.
         #    La limpieza sigue siendo obligatoria y su tiempo cuenta en el resultado.
+        logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
         raise NotImplementedError("SWE-bench environment cleanup is not implemented yet.")
 
 
@@ -79,6 +91,7 @@ def build_swebench_system_prompt(
     mcp_manual: str, *, response_format: str = "python",
 ) -> str:
     """Build English SWE-bench instructions with the discovered tool manual."""
+    logger.debug("Entrando en build_swebench_system_prompt")
     # 1. Describir Thought -> Code -> Observation, variables persistentes y print
     #    para obtener información real. Incluir mcp_manual íntegro con sus firmas.
     # 2. Explicar un ejemplo pequeño de trabajo: buscar un símbolo, leer el archivo,
@@ -96,11 +109,13 @@ def build_swebench_system_prompt(
     # 6. Prohibir soluciones externas, PRs, issues, parches memorizados sin explorar
     #    y accesos fuera del contexto. No asegurar que tests locales equivalen al examen.
     # 7. Devolver una cadena en inglés; no llamar herramientas ni ejecutar ejemplos.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The SWE-bench system prompt is not implemented yet.")
 
 
 def build_swebench_task_prompt(task: SWEBenchTaskInput) -> str:
     """Format the supplied issue context without adding external solution material."""
+    logger.debug("Entrando en build_swebench_task_prompt")
     # 1. Identificar la tarea con instance_id y añadir repo si se recibió.
     # 2. Incluir problem_statement íntegro y delimitado como descripción de la tarea.
     #    Añadir hints_text solamente cuando contenga texto.
@@ -108,16 +123,19 @@ def build_swebench_task_prompt(task: SWEBenchTaskInput) -> str:
     #    de entregar el diff. No incorporar gold patches ni soluciones por instance_id.
     # 4. Devolver texto en inglés. docker_image y eval_script son datos de ejecución
     #    del adaptador/servidor, no órdenes que deba ejecutar aquí el coordinador.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The SWE-bench task prompt is not implemented yet.")
 
 
 def _build_swebench_limits(max_iterations: int) -> AgentLimits:
     """Return the SWE-bench cumulative limits with the requested iteration ceiling."""
+    logger.debug("Entrando en _build_swebench_limits")
     # 1. Rechazar max_iterations <= 0 con ValueError; no convertirlo en éxito vacío.
     # 2. Crear AgentLimits con max_iterations=min(max_iterations, 30),
     #    max_input_tokens=300000, max_output_tokens=10000 y max_time_seconds=900.
     # 3. Devolver el modelo. Son límites por tarea completa, no por petición LLM.
     #    Coinciden con subject VI.1.2 y MetricsLimits.swebench_defaults local.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("SWE-bench limit construction is not implemented yet.")
 
 
@@ -128,6 +146,7 @@ async def run_swebench_agent(
     started_at: float,
 ) -> SolutionOutput:
     """Prepare one testbed, await the shared loop, and preserve the complete patch."""
+    logger.debug("Entrando en run_swebench_agent")
     # 1. Construir limits y deadline=started_at+limits.max_time_seconds. Inicializar
     #    environment=None, client=None, sandbox=None, result=None y system_prompt="".
     #    Toda preparación, petición, MCP y limpieza cuenta desde started_at del CLI.
@@ -168,4 +187,5 @@ async def run_swebench_agent(
     # 12. KeyboardInterrupt/SystemExit se propagan después de limpiar. Si se devuelve
     #     un resultado ordinario, main escribe ese resultado real y sus métricas;
     #     nunca sustituirlo por un placeholder ni repetir la tarea para recuperar estado.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The SWE-bench agent is not implemented yet.")

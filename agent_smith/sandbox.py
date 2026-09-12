@@ -1,12 +1,25 @@
-"""Sandbox import rules and pending worker supervision interfaces.
+"""Small Python controls and supervision of a persistent worker.
 
-Only the import allowlist helpers are implemented. The remaining operations
-describe the intended controls; they do not provide a working security boundary.
+These controls do not resist hostile Python introspection. Project tests use
+the execution environment authorized in AGENTS.md.
 """
 
 from __future__ import annotations
 
+from agent_smith.logging_config import LOG_LEVEL_ENV, get_logger
+
+logger = get_logger('agent_smith.sandbox')
+
+import asyncio
 import builtins
+import json
+import logging
+import os
+import sys
+import tempfile
+import time
+
+import anyio
 import importlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,14 +57,18 @@ class FinalAnswerSignal(BaseException):
 
 def final_answer(answer: str) -> None:
     """Stop execution and carry the complete final answer."""
+    logger.debug("Entrando en final_answer")
     if not isinstance(answer, str):
+        logger.warning("final_answer rechazado: la respuesta debe ser texto")
         raise TypeError("Final answer must be a string.")
 
+    logger.info("Solicitud local de finalización: %s caracteres", len(answer))
     raise FinalAnswerSignal(answer)
 
 
 def load_sandbox_config(path: str | Path | None) -> SandboxConfig:
     """Load sandbox settings and require positive resource limits."""
+    logger.debug("Entrando en load_sandbox_config")
     if path is None:
         config = SandboxConfig()
     else:
@@ -63,33 +80,41 @@ def load_sandbox_config(path: str | Path | None) -> SandboxConfig:
     if config.max_memory_mb <= 0:
         raise RuntimeError("max_memory_mb must be positive.")
 
+    logger.debug("Configuración sandbox válida: memoria=%s MiB, timeout de bloque=%ss", config.max_memory_mb, config.max_execution_time_seconds)
     return config
 
 def _is_import_allowed(module_name, patterns):
     """Check exact module names and patterns ending in .*."""
+    logger.debug("Entrando en _is_import_allowed")
     if module_name.startswith("."):
         return False
 
     for pattern in patterns:
         if module_name == pattern:
+            logger.debug("Import permitido por coincidencia exacta: %s", module_name)
             return True
 
         if pattern.endswith(".*"):
             prefix = pattern[:-1]
             if module_name.startswith(prefix):
+                logger.debug("Import permitido por patrón: %s", module_name)
                 return True
 
+    logger.debug("Import no autorizado: %s", module_name)
     return False
 
 
 def _make_safe_import(authorized_imports):
     """Create an importer that checks the configured allowlist."""
+    logger.debug("Entrando en _make_safe_import")
     allowed_imports = tuple(authorized_imports)
 
     def restricted_import(
         name, globals=None, locals=None, fromlist=(), level=0
     ):
         """Reject disallowed modules before delegating to Python's importer."""
+        logger.debug("Entrando en _make_safe_import.restricted_import")
+        logger.debug("Solicitado import %s; nivel relativo=%s; fromlist=%s", name, level, fromlist)
         if level != 0:
             raise ImportError("Relative imports are not allowed.")
 
@@ -127,18 +152,23 @@ def _resolve_allowed_path(
         allowed_directories: list[Path],
         ) -> Path:
     """Resolve a path and require membership in an allowed directory."""
+    logger.debug("Entrando en _resolve_allowed_path")
     candidate = Path(path).resolve(strict=False)
+    logger.debug("Comprobando pertenencia de la ruta resuelta: %s", candidate)
 
     for directory in allowed_directories:
         root = directory.resolve(strict=False)
         if candidate.is_relative_to(root):
+            logger.debug("Ruta autorizada dentro de %s", root)
             return candidate
 
+    logger.warning("Acceso a archivo rechazado: ruta fuera de los directorios permitidos")
     raise PermissionError(f"Filesystem access denied by sandbox: {candidate}")
 
 
 def _make_safe_open(allowed_directories: list[str]) -> Callable[..., Any]:
     """Create a file opener restricted to allowed directories."""
+    logger.debug("Entrando en _make_safe_open")
     allowed_paths = [
         Path(directory).resolve(strict=False)
         for directory in allowed_directories
@@ -149,6 +179,7 @@ def _make_safe_open(allowed_directories: list[str]) -> Callable[..., Any]:
         newline=None, closefd=True, opener=None,
     ):
         """Check access before opening the resolved path."""
+        logger.debug("Entrando en _make_safe_open.restricted_open")
         if opener is not None:
             raise ValueError("Custom openers are not allowed.")
 
@@ -156,6 +187,7 @@ def _make_safe_open(allowed_directories: list[str]) -> Callable[..., Any]:
             raise ValueError("closefd must be True.")
 
         path = _resolve_allowed_path(file, allowed_paths)
+        logger.debug("Abriendo archivo autorizado %s con modo %s", path, mode)
 
         return builtins.open(
             path,
@@ -171,6 +203,7 @@ def _make_safe_open(allowed_directories: list[str]) -> Callable[..., Any]:
 
 def _make_safe_builtins(config: SandboxConfig) -> dict[str, Any]:
     """Build the allowed builtins and attach restricted import and open."""
+    logger.debug("Entrando en _make_safe_builtins")
     names = [
         "print", "len", "range", "enumerate", "zip",
         "iter", "next", "map", "filter",
@@ -194,38 +227,113 @@ def _make_safe_builtins(config: SandboxConfig) -> dict[str, Any]:
     safe["__import__"] = _make_safe_import(config.authorized_imports)
     safe["open"] = _make_safe_open(config.allowed_directories)
 
+    logger.debug("Builtins preparados: %s nombres; import y open controlados", len(safe))
     return safe
 
 
 def _apply_worker_limits(config: SandboxConfig) -> None:
-    """Apply process memory limits and block the worker's exposed socket APIs."""
-    # 1. Ejecutar sólo dentro del trabajador, antes de ejecutar código del modelo.
-    #    Importar aquí resource y socket con el importador de confianza.
-    # 2. Convertir max_memory_mb a bytes y fijar resource.RLIMIT_AS. No aumentar
-    #    un límite duro existente menor. Si el proceso/plataforma no lo permite,
-    #    abortar el arranque con error; no anunciar un límite que no se aplicó.
-    #    RLIMIT_AS limita memoria virtual, no mide exactamente RAM residente.
-    # 3. Definir un cierre reject_network(*args, **kwargs) que lance
-    #    PermissionError en inglés. Sustituir en este proceso las entradas
-    #    socket.socket, create_connection, create_server, socketpair, fromfd,
-    #    getaddrinfo, gethostbyname, gethostbyname_ex, gethostbyaddr y getnameinfo
-    #    cuando existan. Bloquear también creación de sockets de escucha.
-    # 4. Hacerlo antes de imports autorizados del usuario, para evitar que guarden
-    #    estas referencias originales. No importar bibliotecas de red por él.
-    # 5. Mantener el rechazo de imports no autorizados y no exponer procesos ni
-    #    clientes Docker. No construir proxies generales ni tocar otros procesos.
-    #    Los parches de APIs no son aislamiento del sistema operativo: comprobar
-    #    las vías expuestas al ampliar imports y documentar esa limitación.
-    # 6. El supervisor aplicará el timeout; esta función no abre MCP ni temporizadores.
-    raise NotImplementedError("Worker resource controls are not implemented yet.")
+    """Set memory limits and disable exposed socket entry points in the worker."""
+    logger.debug("Entrando en _apply_worker_limits")
+    import resource
+    import socket
+
+    if config.max_memory_mb <= 0 or config.max_execution_time_seconds <= 0:
+        raise ValueError("Sandbox resource limits must be positive.")
+    memory = config.max_memory_mb * 1024 * 1024
+    _, hard = resource.getrlimit(resource.RLIMIT_AS)
+    if hard != resource.RLIM_INFINITY:
+        memory = min(memory, hard)
+    resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
+    logger.info("Límite de memoria del trabajador aplicado: %s bytes de espacio virtual", memory)
+
+    def reject_network(*args, **kwargs):
+        logger.debug("Entrando en _apply_worker_limits.reject_network")
+        logger.warning("Acceso de red del trabajador rechazado")
+        raise PermissionError("Network access is disabled in the sandbox.")
+
+    for name in (
+        "socket", "create_connection", "create_server", "socketpair", "fromfd",
+        "getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr",
+        "getnameinfo",
+    ):
+        if hasattr(socket, name):
+            setattr(socket, name, reject_network)
+    logger.debug("Vías de red expuestas deshabilitadas en el trabajador")
+
+
+async def _send_worker_message(worker, message: dict) -> None:
+    logger.debug("Entrando en _send_worker_message")
+    logger.debug("Enviando JSON al trabajador: tipo=%s", message.get("type"))
+    worker.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
+    await worker.stdin.drain()
+
+
+async def _read_worker_message(worker, buffer: bytearray) -> dict:
+    # Read chunks so an intact final answer can exceed StreamReader's line limit.
+    logger.debug("Entrando en _read_worker_message")
+    while b"\n" not in buffer:
+        chunk = await worker.stdout.read(16_384)
+        if not chunk:
+            logger.warning("EOF del trabajador al esperar un mensaje JSON")
+            raise EOFError("Worker closed its output channel.")
+        buffer.extend(chunk)
+    end = buffer.index(b"\n")
+    line = bytes(buffer[:end])
+    del buffer[:end + 1]
+    message = json.loads(line)
+    if not isinstance(message, dict) or not isinstance(message.get("type"), str):
+        raise ValueError("Invalid worker message.")
+    logger.debug("JSON recibido del trabajador: tipo=%s, bytes=%s", message["type"], len(line))
+    return message
+
+
+async def _dispatch_mcp(session, message: dict) -> dict:
+    """Call the SDK directly; tool errors are observations, disconnects are fatal."""
+    logger.debug("Entrando en _dispatch_mcp")
+    from mcp.shared.exceptions import McpError
+
+    if session is None:
+        logger.warning("El trabajador pidió MCP sin una sesión conectada")
+        return {"type": "mcp_result", "error": "No MCP server is connected."}
+    operation, arguments = message["operation"], message["arguments"]
+    logger.info("Ejecutando MCP %s; herramienta/prompt=%s", operation, arguments.get("name", "—"))
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("MCP ENVIADO [%s]:\n%s", operation, json.dumps(arguments, ensure_ascii=False, indent=2))
+    try:
+        if operation == "call_tool":
+            response = await session.call_tool(**arguments)
+        elif operation == "read_resource":
+            response = await session.read_resource(**arguments)
+        elif operation == "get_prompt":
+            response = await session.get_prompt(**arguments)
+        else:
+            raise ValueError(f"Unknown MCP operation: {operation}")
+    except McpError as exc:
+        logger.warning("El SDK MCP devolvió un error: código=%s", exc.error.code)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("MCP RECIBIDO [%s, error SDK]:\n%s", operation, exc.error.model_dump_json(indent=2, by_alias=True))
+        if exc.error.code not in (-32601, -32602):
+            raise
+        return {"type": "mcp_result", "error": str(exc)}
+    data = response.model_dump(mode="json", by_alias=True)
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("MCP RECIBIDO [%s]:\n%s", operation, json.dumps(data, ensure_ascii=False, indent=2))
+    if data.get("isError"):
+        logger.warning("La herramienta MCP informó un error; se devolverá como observación")
+        return {"type": "mcp_result", "error": json.dumps(data, ensure_ascii=False)}
+    result = data.get("structuredContent")
+    if result is None:
+        content = data.get("content", data.get("contents"))
+        if content is not None and len(content) == 1 and "text" in content[0]:
+            result = content[0]["text"]
+        else:
+            result = data
+    logger.debug("Operación MCP completada; devolviendo resultado al trabajador")
+    return {"type": "mcp_result", "result": result}
 
 
 class SandboxSession:
-    """Supervise one persistent Python worker and borrow an open MCP session.
-
-    The owner opens and closes MCP in the same async task. Generated code only
-    receives JSON data and local call wrappers, never this supervisor or the SDK.
-    """
+    """Own one worker; borrow MCP from the task that opens and closes it."""
 
     def __init__(
         self,
@@ -233,98 +341,183 @@ class SandboxSession:
         mcp_session: ClientSession | None = None,
         manual: MCPManual | None = None,
     ) -> None:
-        """Store settings and borrowed MCP objects without starting a process."""
-        # 1. Guardar copia de config y referencias a mcp_session/manual.
-        #    Exigir ambos objetos MCP juntos o ambos None; no conectar desde aquí.
-        # 2. Preparar self.worker=None, self.work_directory=None y una bandera
-        #    de operación activa. Sólo se permitirá una ejecución a la vez.
-        # 3. No crear bucles, hilos, futures, contenedores ni procesos en __init__.
-        #    La sesión MCP pertenece al llamante; close no debe cerrarla.
-        raise NotImplementedError("Sandbox session initialization is not implemented yet.")
+        logger.debug("Entrando en SandboxSession.__init__")
+        if (mcp_session is None) != (manual is None):
+            raise ValueError("MCP session and manual must be supplied together.")
+        self.config = config.model_copy(deep=True)
+        self.mcp_session = mcp_session
+        self.manual = manual
+        self.worker = None
+        self.work_directory = None
+        self._temporary = None
+        self._buffer = bytearray()
+        self._active = False
 
     async def start(self) -> None:
-        """Start and initialize the worker with serializable settings only."""
-        # 1. Rechazar start si ya hay trabajador activo; tras close se puede crear
-        #    uno nuevo, con variables vacías. No restaurar ejecutando pasos previos.
-        # 2. Crear un directorio temporal propio y arrancar con
-        #    asyncio.create_subprocess_exec el Python 3.10 actual, '-u' y la ruta
-        #    absoluta a json_worker.py. Usar stdin/stdout como pipes y cwd temporal.
-        #    Pasar un entorno mínimo explícito sin claves, PYTHONPATH ni Docker.
-        #    No usar shell. Los imports internos provienen del proyecto de confianza.
-        # 3. Resolver el destino de stderr del trabajador sin dejar un pipe que
-        #    pueda llenarse sin lector; usar un fichero temporal de diagnóstico.
-        # 4. Enviar una línea JSON init con config=config.model_dump(), tools,
-        #    resources, resource_templates y prompts del manual (listas vacías
-        #    sin MCP). Nunca serializar objetos del SDK. El worker usa config/tools;
-        #    las otras listas describen las capacidades disponibles.
-        # 5. Esperar ready con un plazo corto de arranque. El trabajador lo envía
-        #    sólo después de aplicar controles y preparar su namespace persistente.
-        # 6. Ante EOF, JSON inválido, error de arranque o cancelación, llamar close
-        #    para liberar lo creado y propagar el fallo. El adaptador cuenta este
-        #    tiempo dentro del deadline total, aunque aún no haya bloque de código.
-        raise NotImplementedError("Sandbox startup is not implemented yet.")
+        """Start Python with a temporary cwd and no inherited credentials."""
+        logger.debug("Entrando en SandboxSession.start")
+        logger.info("Arrancando trabajador Python persistente")
+        if self.worker is not None:
+            raise RuntimeError("Sandbox is already started.")
+        try:
+            self._temporary = tempfile.TemporaryDirectory(prefix="agent-smith-")
+            self.work_directory = Path(self._temporary.name)
+            logger.debug("Directorio temporal del trabajador creado: %s", self.work_directory)
+            script = Path(__file__).resolve().parents[1] / "json_worker.py"
+            self.worker = await asyncio.create_subprocess_exec(
+                sys.executable, "-u", str(script),
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=None, cwd=self.work_directory,
+                env={"PYTHONIOENCODING": "utf-8", "PYTHONNOUSERSITE": "1",
+                     LOG_LEVEL_ENV: os.environ.get(LOG_LEVEL_ENV, "")},
+            )
+            with anyio.fail_after(10):
+                await _send_worker_message(self.worker, {
+                    "type": "init", "config": self.config.model_dump(),
+                    "tools": self.manual.tools if self.manual else [],
+                })
+                reply = await _read_worker_message(self.worker, self._buffer)
+                if reply["type"] == "worker_error":
+                    raise RuntimeError(reply["error"])
+                if reply["type"] != "ready":
+                    raise RuntimeError("Worker did not become ready.")
+            logger.info("Trabajador listo; pid=%s", self.worker.pid)
+        except BaseException as exc:
+            logger.error("Fallo al iniciar el trabajador: %s", exc)
+            await self.close()
+            if isinstance(exc, Exception):
+                raise RuntimeError(f"Sandbox startup failed: {exc}") from exc
+            raise
 
     async def execute(
         self, code: str, *, deadline: float | None = None,
     ) -> SandboxExecution:
-        """Run one code block, retaining partial output and servicing MCP requests."""
-        # 1. Exigir trabajador arrancado y ninguna ejecución activa. Marcar la
-        #    operación activa y limpiarla en finally, incluso si se cancela.
-        #    Inicializar salida recibida, respuesta final y estados del bloque.
-        # 2. Guardar inicio_bloque=monotonic() y espera_mcp=0, enviar JSON execute
-        #    con code y leer por fragmentos hasta cada salto de línea, conservando
-        #    sobrantes para el mensaje siguiente. No depender del límite de 64 KiB
-        #    de StreamReader.readline: un patch puede superar ese tamaño. No
-        #    truncar mensajes JSON para que quepan; un fallo de memoria es un error.
-        #    Tiempo de código consumido = monotonic()-inicio_bloque-espera_mcp;
-        #    incluye también procesar mensajes/salida, no sólo esperar en el pipe.
-        #    Acotar cada espera por el resto del bloque y por deadline si existe.
-        # 3. Mensaje output: conservar texto en orden. Mensaje truncated: marcar
-        #    truncamiento inmediatamente, aunque el trabajador muera antes de done.
-        #    Al terminar añadir UN aviso a output: contador exacto de omitidos si
-        #    llegó done, o contador final desconocido si murió. No duplicar avisos.
-        # 4. Mensaje mcp_request: medir desde el inicio de la espera MCP hasta
-        #    entregar su respuesta y sumar ese intervalo a espera_mcp. Las demás
-        #    fases siguen consumiendo tiempo del bloque. Admitir únicamente las
-        #    operaciones call_tool, read_resource y get_prompt. Llamar directamente
-        #    await self.mcp_session.call_tool/read_resource/get_prompt según operación.
-        #    El SDK/servidor valida argumentos; no reconstruir JSON Schema.
-        #    Sin MCP devolver un error claro al trabajador. Los errores de herramienta
-        #    son datos reales; la desconexión fatal termina la ejecución con error.
-        # 5. Convertir la respuesta SDK a JSON: conservar structuredContent cuando
-        #    exista; si no, texto y datos de contenido sin inventar valores. Para una
-        #    única pieza de texto (p. ej. get_patch), devolver ese string íntegro.
-        #    Para isError, enviar error explícito. Enviar mcp_result y reanudar
-        #    el contador del bloque. Cada espera MCP sigue limitada por deadline.
-        # 6. No recortar resultados MCP al transportarlos: pueden contener el patch.
-        #    Sólo print/logs tienen límite. No ejecutar dos llamadas a la vez.
-        # 7. Mensaje done: construir SandboxExecution con salida ya recibida,
-        #    final_answer (None o string completo), error y truncated. Los errores
-        #    Python normales permiten otro bloque con el mismo namespace. Usar
-        #    omitted de done para completar el aviso de truncamiento una sola vez.
-        # 8. Mensaje control_exit: cerrar trabajador y propagar KeyboardInterrupt
-        #    o SystemExit al llamante, según el tipo y código JSON recibidos.
-        #    No convertirlos en una observación corriente.
-        # 9. Si vence tiempo del bloque/tarea, cerrar el trabajador y devolver
-        #    timed_out=True, worker_failed=True y salida parcial. Si hay EOF/JSON
-        #    inválido/muerte, devolver worker_failed=True y diagnóstico real.
-        #    No inventar salida que murió sin recibirse; nunca reejecutar el bloque.
-        # 10. Una cancelación del supervisor requiere close y propagación. El
-        #     agente finaliza ante pérdida del trabajador; el REPL puede avisar y
-        #     llamar close/start explícitamente antes de la siguiente entrada.
-        raise NotImplementedError("Sandbox execution is not implemented yet.")
+        """Execute once, retaining output and serving sequential MCP requests."""
+        logger.debug("Entrando en SandboxSession.execute")
+        logger.debug("Enviando bloque al trabajador: %s caracteres", len(code))
+        if self.worker is None or self._active:
+            raise RuntimeError("Sandbox must be started and idle.")
+        self._active = True
+        result = SandboxExecution()
+        output = []
+        omitted = None
+        started = time.monotonic()
+        mcp_wait = 0.0
+
+        def remaining():
+            logger.debug("Entrando en SandboxSession.execute.remaining")
+            now = time.monotonic()
+            block = self.config.max_execution_time_seconds - (now - started - mcp_wait)
+            return min(block, deadline - now) if deadline is not None else block
+
+        try:
+            with anyio.fail_after(max(0, remaining())):
+                await _send_worker_message(self.worker, {"type": "execute", "code": code})
+            while True:
+                with anyio.fail_after(max(0, remaining())):
+                    message = await _read_worker_message(self.worker, self._buffer)
+                kind = message["type"]
+                if kind == "output":
+                    output.append(message["text"])
+                elif kind == "truncated":
+                    result.truncated = True
+                elif kind == "mcp_request":
+                    logger.debug("Pausando el reloj del bloque durante la espera MCP; el plazo de tarea continúa")
+                    mcp_started = time.monotonic()
+                    timeout = None if deadline is None else max(0, deadline - mcp_started)
+                    with anyio.fail_after(timeout):
+                        reply = await _dispatch_mcp(self.mcp_session, message)
+                        await _send_worker_message(self.worker, reply)
+                    mcp_wait += time.monotonic() - mcp_started
+                    logger.debug("MCP terminó; espera MCP acumulada=%.3fs; reanudando reloj del bloque", mcp_wait)
+                elif kind == "done":
+                    result.final_answer = message["final_answer"]
+                    result.error = message["error"]
+                    result.truncated = message["truncated"]
+                    omitted = message["omitted"]
+                    if remaining() < 0:
+                        raise TimeoutError("Execution deadline exceeded.")
+                    break
+                elif kind == "control_exit":
+                    logger.warning("Interrupción del trabajador: %s", message["exception"])
+                    if message["exception"] == "KeyboardInterrupt":
+                        raise KeyboardInterrupt()
+                    if message["exception"] == "SystemExit":
+                        raise SystemExit(message.get("code"))
+                    raise ValueError("Unknown control exception.")
+                elif kind == "worker_error":
+                    raise RuntimeError(message["error"])
+                else:
+                    raise ValueError(f"Unexpected worker message: {kind}")
+        except Exception as exc:
+            logger.error("Fallo fatal de ejecución; se conservará la salida parcial: %s", exc)
+            result.timed_out = isinstance(exc, TimeoutError)
+            result.worker_failed = True
+            result.error = f"{type(exc).__name__}: {exc}"
+            if result.timed_out:
+                result.error = "Execution timed out; worker state was lost."
+            try:
+                await self.close()
+            except Exception as cleanup:
+                result.error += f" Cleanup failed: {cleanup}"
+        except BaseException:
+            logger.warning("Ejecución interrumpida; cerrando el trabajador")
+            await self.close()
+            raise
+        finally:
+            self._active = False
+        result.output = "".join(output)
+        if result.truncated:
+            count = str(omitted) if omitted is not None else "an unknown number of"
+            result.output += f"\n[Output truncated: {count} characters omitted.]"
+        logger.info(
+            "Bloque recibido: error=%s, timeout=%s, trabajador perdido=%s, final=%s, salida=%s caracteres",
+            result.error is not None, result.timed_out, result.worker_failed,
+            result.final_answer is not None, len(result.output),
+        )
+        return result
 
     async def close(self) -> None:
-        """Stop the owned worker and release local resources without closing MCP."""
-        # 1. Si no se creó ningún recurso, terminar normalmente. Permitir llamadas
-        #    repetidas: no convertir una limpieza ya realizada en otro error.
-        # 2. Cerrar stdin para indicar EOF y esperar brevemente al trabajador.
-        #    Si sigue vivo, terminate, esperar, y kill como último recurso; siempre
-        #    await wait para recogerlo. No esperar indefinidamente a código usuario.
-        # 3. Cerrar pipes y fichero de diagnóstico, borrar sólo el temporal propio.
-        #    No borrar allowed_directories ni ningún contenedor o proceso ajeno.
-        # 4. Intentar el resto de cierres aunque alguno falle; conservar los errores
-        #    para informarlos al llamante sin ocultar el fallo original.
-        # 5. Vaciar referencias al proceso/temporal y liberar bandera de operación.
-        #    El propietario cerrará MCP después, en la misma tarea que lo abrió.
-        raise NotImplementedError("Sandbox cleanup is not implemented yet.")
+        """Reap only our process, then release only our temporary files."""
+        logger.debug("Entrando en SandboxSession.close")
+        logger.info("Cerrando trabajador y directorio temporal")
+        errors = []
+        with anyio.CancelScope(shield=True):
+            try:
+                if self.worker is not None:
+                    if self.worker.stdin is not None:
+                        logger.debug("Cerrando stdin para enviar EOF al trabajador")
+                        self.worker.stdin.close()
+                    # communicate also drains pipes; wait alone can block on full output.
+                    for action, timeout in ((None, 0.3), ("terminate", 0.5), ("kill", 1.0)):
+                        if action and self.worker.returncode is None:
+                            logger.warning("El trabajador sigue activo; enviando %s", action)
+                            try:
+                                getattr(self.worker, action)()
+                            except ProcessLookupError:
+                                pass
+                        try:
+                            await asyncio.wait_for(self.worker.communicate(), timeout)
+                            logger.debug("Trabajador recogido; código de salida=%s", self.worker.returncode)
+                            break
+                        except asyncio.TimeoutError:
+                            if action == "kill":
+                                raise RuntimeError("Worker did not exit after kill.")
+            except Exception as exc:
+                logger.error("Fallo al cerrar el trabajador: %s", exc)
+                errors.append(str(exc))
+            finally:
+                self.worker = None
+                if self._temporary is not None:
+                    try:
+                        self._temporary.cleanup()
+                        logger.debug("Directorio temporal del trabajador eliminado")
+                    except Exception as exc:
+                        logger.error("No se pudo eliminar el directorio temporal: %s", exc)
+                        errors.append(str(exc))
+                self._temporary = self.work_directory = None
+                self._buffer.clear()
+                self._active = False
+        if errors:
+            raise RuntimeError("Sandbox cleanup failed: " + "; ".join(errors))
+        logger.debug("Sandbox cerrado correctamente")

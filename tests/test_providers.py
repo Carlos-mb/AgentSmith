@@ -1,0 +1,172 @@
+"""Fake HTTP responses verify actual request construction and accounting."""
+import asyncio
+import json
+import time
+
+import httpx
+import pytest
+
+from agent_smith.providers import ProviderClient, ProviderConfig
+
+
+def config(**kwargs):
+    return ProviderConfig(api_url="https://example.invalid/v1", model_name="test-model",
+                          api_key_environment_variables=["KEY_ONE", "KEY_TWO"], **kwargs)
+
+
+def answer(text="```python\nprint(1)\n```", incoming=100, outgoing=20):
+    return {"choices": [{"message": {"content": text}}],
+            "usage": {"prompt_tokens": incoming, "completion_tokens": outgoing}}
+
+
+def mock_http(monkeypatch, handler):
+    original = httpx.AsyncClient
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr("agent_smith.providers.httpx.AsyncClient", lambda **kwargs: original(
+        transport=transport, **kwargs))
+
+
+def complete(client, **kwargs):
+    parameters = dict(max_input_tokens=6000, max_output_tokens=1500, deadline=time.monotonic() + 10)
+    parameters.update(kwargs)
+    return asyncio.run(client.complete([{"role": "user", "content": "hello"}], **parameters))
+
+
+def test_configuration_selection_and_key_deduplication(tmp_path):
+    path = tmp_path / "models.json"
+    path.write_text(json.dumps({"providers": [config().model_dump()]}))
+    client = ProviderClient.from_environment(
+        "https://example.invalid/v1/", "test-model", path, {"KEY_ONE": "same", "KEY_TWO": "same"})
+    assert client.api_keys == ["same"]
+    with pytest.raises(ValueError, match="exactly one"):
+        ProviderClient.from_environment("https://example.invalid/v1", "different", path, {})
+    with pytest.raises(RuntimeError, match="Missing API key"):
+        ProviderClient(config(), {})
+
+
+def test_payload_and_measured_usage(monkeypatch):
+    sent = []
+    def handler(request):
+        sent.append(request)
+        body = answer()
+        body["usage"]["completion_tokens_details"] = {"reasoning_tokens": 10}
+        return httpx.Response(200, json=body)
+    mock_http(monkeypatch, handler)
+    result = complete(ProviderClient(config(), {"KEY_ONE": "fake-one"}), max_output_tokens=123)
+    payload = json.loads(sent[0].content)
+    assert payload["max_tokens"] == 123 and payload["stream"] is False
+    assert payload["stop"] == ["<end_code>"]
+    assert payload["temperature"] == 0.1
+    assert str(sent[0].url) == "https://example.invalid/v1/chat/completions"
+    assert sent[0].headers["Authorization"] == "Bearer fake-one"
+    assert result.input_tokens == 100 and result.output_tokens == 20
+    assert result.request_count == 1 and result.retries == 0
+    assert result.usage_complete and result.error is None
+
+
+def test_bounded_rotation_accounts_for_all_known_attempts(monkeypatch):
+    keys = []
+    def handler(request):
+        keys.append(request.headers["Authorization"])
+        if len(keys) == 1:
+            return httpx.Response(429, json={"usage": {"prompt_tokens": 0, "completion_tokens": 0}})
+        return httpx.Response(200, json=answer())
+    mock_http(monkeypatch, handler)
+    client = ProviderClient(config(max_retries=1), {"KEY_ONE": "one", "KEY_TWO": "two"})
+    result = complete(client)
+    assert keys == ["Bearer one", "Bearer two"]
+    assert result.request_count == 2 and result.retries == 1
+    assert result.input_tokens == 100 and result.output_tokens == 20
+    assert result.error is None
+
+
+@pytest.mark.parametrize("reported", ["actual/free-model", None, "", 123])
+def test_router_preserves_reported_model_without_changing_request_target(monkeypatch, reported):
+    def handler(request):
+        assert json.loads(request.content)["model"] == "openrouter/free"
+        body = answer()
+        body["model"] = reported
+        return httpx.Response(200, json=body)
+    mock_http(monkeypatch, handler)
+    settings = config()
+    settings.model_name = "openrouter/free"
+    client = ProviderClient(settings, {"KEY_ONE": "fake-one"})
+    result = complete(client)
+    assert result.model_name == (reported if reported == "actual/free-model" else "openrouter/free")
+    assert client.config.model_name == "openrouter/free"
+    assert result.input_tokens == 100 and result.output_tokens == 20
+
+
+def test_missing_usage_rotates_but_does_not_retry_unknown_spend(monkeypatch):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(429, json={"error": {"message": "limited"}})
+    mock_http(monkeypatch, handler)
+    client = ProviderClient(config(), {"KEY_ONE": "one", "KEY_TWO": "two"})
+    result = complete(client)
+    assert len(calls) == 1 and client.key_index == 1
+    assert not result.usage_complete and "subtotals" in result.error
+
+
+@pytest.mark.parametrize("status", [401, 403, 400])
+def test_non_retryable_status_is_preserved(monkeypatch, status):
+    mock_http(monkeypatch, lambda request: httpx.Response(status, json={}))
+    result = complete(ProviderClient(config(), {"KEY_ONE": "one"}))
+    assert result.request_count == 1 and f"HTTP {status}" in result.error
+
+
+def test_partial_usage_is_not_replaced_by_estimates(monkeypatch):
+    body = answer()
+    del body["usage"]["completion_tokens"]
+    mock_http(monkeypatch, lambda request: httpx.Response(200, json=body))
+    result = complete(ProviderClient(config(), {"KEY_ONE": "one"}))
+    assert result.input_tokens == 100 and result.output_tokens == 0
+    assert not result.usage_complete and "subtotals" in result.error
+
+
+def test_transport_error_does_not_leak_credentials_or_retry(monkeypatch):
+    def handler(request):
+        raise httpx.ConnectError("secret: fake-one")
+    mock_http(monkeypatch, handler)
+    result = complete(ProviderClient(config(), {"KEY_ONE": "fake-one"}))
+    assert result.request_count == 1 and not result.usage_complete
+    assert "fake-one" not in result.error
+
+
+def test_provider_error_keeps_diagnosis_without_keys_or_unknown_usage_retry(monkeypatch):
+    mock_http(monkeypatch, lambda request: httpx.Response(503, json={
+        "error": {"message": "Model overloaded for fake-one; alternative fake-two."},
+    }))
+    result = complete(ProviderClient(config(), {"KEY_ONE": "fake-one", "KEY_TWO": "fake-two"}))
+    assert "HTTP 503" in result.error and "Model overloaded" in result.error
+    assert "fake-one" not in result.error and "fake-two" not in result.error
+    assert result.error.count("known subtotals") == 1
+    assert result.request_count == 1 and not result.usage_complete
+
+
+def test_limits_stop_before_sending(monkeypatch):
+    def handler(request):
+        pytest.fail("Must not send after a limit.")
+    mock_http(monkeypatch, handler)
+    client = ProviderClient(config(), {"KEY_ONE": "one"})
+    for kwargs in ({"max_input_tokens": 1}, {"max_output_tokens": 0}, {"deadline": 0}):
+        result = complete(client, **kwargs)
+        assert result.request_count == 0 and result.error
+
+
+def test_real_over_budget_usage_is_kept(monkeypatch):
+    mock_http(monkeypatch, lambda request: httpx.Response(200, json=answer(incoming=7000)))
+    result = complete(ProviderClient(config(), {"KEY_ONE": "one"}))
+    assert result.input_tokens == 7000 and "exceeded" in result.error
+
+
+def test_long_history_does_not_count_each_byte_as_a_token(monkeypatch):
+    mock_http(monkeypatch, lambda request: httpx.Response(200, json=answer(incoming=1600)))
+    client = ProviderClient(config(), {"KEY_ONE": "fake-one"})
+    result = asyncio.run(client.complete(
+        [{"role": "user", "content": "some Python code and observations\n" * 180}],
+        max_input_tokens=4500, max_output_tokens=500, deadline=time.monotonic() + 10,
+    ))
+    assert result.request_count == 1 and result.error is None
+    assert result.input_tokens == 1600

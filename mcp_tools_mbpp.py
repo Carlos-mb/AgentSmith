@@ -1,5 +1,9 @@
 """MCP server that exposes the tools required by the MBPP agent."""
 
+from agent_smith.logging_config import configure_logging, get_logger
+
+logger = get_logger('mcp_tools_mbpp')
+
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -28,6 +32,8 @@ def run_tests(
     Returns:
         A dictionary containing success, message, output, and exit_code.
     """
+    logger.debug("Entrando en run_tests")
+    logger.info("Herramienta MCP run_tests recibida; delegando ejecución a Docker")
     return run_mbpp_tests(
         code=code,
         test_imports=test_imports,
@@ -37,4 +43,7 @@ def run_tests(
 
 
 if __name__ == "__main__":
+    configure_logging()
+    logger.info("Iniciando servidor MCP MBPP mediante mcp.run con transporte stdio")
     mcp.run(transport="stdio")
+    logger.info("Servidor MCP MBPP cerrado")

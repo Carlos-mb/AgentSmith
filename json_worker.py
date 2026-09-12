@@ -1,16 +1,20 @@
-"""Pending synchronous JSON worker for persistent, restricted Python execution.
-
-No worker loop is implemented yet. Protocol messages are newline-delimited JSON;
-stdout is reserved for them. The supervisor owns MCP and all external credentials.
-"""
+"""Persistent Python worker. stdout carries only newline-delimited JSON."""
 
 from __future__ import annotations
+
+from agent_smith.logging_config import configure_logging, get_logger
+
+logger = get_logger('json_worker')
 from typing import Any, Callable, TextIO
 from agent_smith.models import SandboxConfig
 import json
+import keyword
+import sys
 from contextlib import redirect_stderr, redirect_stdout
 
-from agent_smith.sandbox import FinalAnswerSignal
+from agent_smith.sandbox import (
+    FinalAnswerSignal, _apply_worker_limits, _make_safe_builtins, final_answer,
+)
 
 
 class WorkerProtocolError(BaseException):
@@ -19,6 +23,8 @@ class WorkerProtocolError(BaseException):
 
 def _send_message(stream: TextIO, message: dict[str, Any]) -> None:
     """Write and flush one JSON message."""
+    logger.debug("Entrando en _send_message")
+    logger.debug("Enviando mensaje JSON tipo=%s", message.get("type"))
     try:
         stream.write(json.dumps(message) + "\n")
         stream.flush()
@@ -28,9 +34,11 @@ def _send_message(stream: TextIO, message: dict[str, Any]) -> None:
 
 def _receive_message(stream: TextIO) -> dict[str, Any] | None:
     """Read one JSON message, returning None at end of input."""
+    logger.debug("Entrando en _receive_message")
     try:
         line = stream.readline()
         if line == "":
+            logger.info("EOF del supervisor recibido")
             return None
 
         message = json.loads(line)
@@ -43,6 +51,7 @@ def _receive_message(stream: TextIO) -> dict[str, Any] | None:
     if not isinstance(message.get("type"), str):
         raise WorkerProtocolError("Message type must be a string.")
 
+    logger.debug("Mensaje JSON recibido: tipo=%s", message["type"])
     return message
 
 
@@ -50,6 +59,7 @@ class WorkerOutput:
     """Send limited output and count omitted characters."""
 
     def __init__(self, stream: TextIO, max_characters: int = 12_000) -> None:
+        logger.debug("Entrando en WorkerOutput.__init__")
         if max_characters <= 0:
             raise ValueError("max_characters must be positive.")
 
@@ -60,6 +70,8 @@ class WorkerOutput:
 
     def write(self, text: str) -> int:
         """Send the allowed text and report truncation once."""
+        logger.debug("Entrando en WorkerOutput.write")
+        logger.debug("Salida del código: %s caracteres recibidos; %s enviados previamente", len(text), self.sent)
         remaining = self.max_characters - self.sent
         chunk = text[:remaining]
 
@@ -70,6 +82,7 @@ class WorkerOutput:
         omitted = len(text) - len(chunk)
         if omitted > 0:
             if self.omitted == 0:
+                logger.warning("Salida del bloque truncada al alcanzar %s caracteres", self.max_characters)
                 _send_message(self.stream, {"type": "truncated"})
             self.omitted += omitted
 
@@ -77,6 +90,7 @@ class WorkerOutput:
 
     def flush(self) -> None:
         """Flush the stream used for JSON messages."""
+        logger.debug("Entrando en WorkerOutput.flush")
         try:
             self.stream.flush()
         except Exception as exc:
@@ -91,18 +105,21 @@ def _request_mcp(
     arguments: dict[str, Any],
 ) -> Any:
     """Request one MCP operation from the supervisor and wait for its JSON reply."""
-    # 1. Admitir call_tool, read_resource o get_prompt. Construir mcp_request con
-    #    operation y arguments. Sólo hay una petición activa; no usar IDs/futures.
-    # 2. Enviar con _send_message y esperar con _receive_message. El trabajador
-    #    permanece bloqueado; es el supervisor asíncrono quien espera al SDK MCP.
-    # 3. Exigir mcp_result. Si trae error, lanzar RuntimeError con ese diagnóstico
-    #    para que el Python ejecutado pueda verlo/capturarlo. No falsificar éxito.
-    # 4. Si trae result, devolver ese valor JSON, conservando strings completos.
-    #    Un get_patch textual debe permitir final_answer(get_patch()) sin recorte.
-    # 5. EOF, campos mínimos inválidos u otro tipo de mensaje lanzan
-    #    WorkerProtocolError. Es BaseException, distinta del RuntimeError de una
-    #    herramienta, y execute_block la deja terminar el proceso sin enviar done.
-    raise NotImplementedError("Worker MCP requests are not implemented yet.")
+    logger.debug("Entrando en _request_mcp")
+    logger.info("Solicitando operación MCP %s al supervisor", operation)
+    _send_message(output_stream, {
+        "type": "mcp_request", "operation": operation, "arguments": arguments,
+    })
+    reply = _receive_message(input_stream)
+    if reply is None or reply["type"] != "mcp_result":
+        raise WorkerProtocolError("Expected mcp_result.")
+    if reply.get("error") is not None:
+        logger.warning("La operación MCP devolvió un error; se entregará al código")
+        raise RuntimeError(reply["error"])
+    if "result" not in reply:
+        raise WorkerProtocolError("MCP reply is missing result.")
+    logger.debug("Resultado MCP recibido; reanudando el bloque Python")
+    return reply["result"]
 
 
 def _make_tool_wrapper(
@@ -111,18 +128,24 @@ def _make_tool_wrapper(
     output_stream: TextIO,
 ) -> Callable[..., Any]:
     """Describe a local Python wrapper for one dynamically discovered MCP tool."""
-    # 1. Copiar nombre del tool y orden de inputSchema.properties para vincular
-    #    los argumentos posicionales Python. No capturar sesiones ni el supervisor.
-    # 2. Definir un cierre tool_wrapper(*args, **kwargs). Formar el dict arguments
-    #    asignando cada posicional al nombre correspondiente, en ese orden.
-    # 3. Rechazar más posicionales que nombres y valores duplicados entre args y
-    #    kwargs con TypeError; añadir el resto de kwargs tal como se recibió.
-    #    Esta vinculación es Python, no validación JSON Schema: tipos, requisitos
-    #    y restricciones se delegan al SDK y al servidor MCP.
-    # 4. El cierre llama _request_mcp(..., 'call_tool', {'name':nombre,
-    #    'arguments':arguments}) y devuelve su resultado. No imprime por el usuario.
-    # 5. Devolver el cierre. No generar su código con exec ni inventar herramientas.
-    raise NotImplementedError("Worker tool wrappers are not implemented yet.")
+    logger.debug("Entrando en _make_tool_wrapper")
+    name = tool["name"]
+    parameters = list(tool.get("inputSchema", {}).get("properties", {}))
+
+    def tool_wrapper(*args, **kwargs):
+        logger.debug("Entrando en _make_tool_wrapper.tool_wrapper")
+        logger.debug("Llamada a herramienta descubierta: %s", name)
+        if len(args) > len(parameters):
+            raise TypeError(f"Too many positional arguments for {name}.")
+        arguments = dict(zip(parameters, args))
+        if arguments.keys() & kwargs.keys():
+            raise TypeError(f"Duplicate arguments for {name}.")
+        arguments.update(kwargs)
+        return _request_mcp(input_stream, output_stream, "call_tool", {
+            "name": name, "arguments": arguments,
+        })
+
+    return tool_wrapper
 
 
 def _build_namespace(
@@ -132,25 +155,40 @@ def _build_namespace(
     output_stream: TextIO,
 ) -> dict[str, Any]:
     """Prepare persistent user globals with restricted builtins and MCP wrappers."""
-    # 1. Obtener _make_safe_builtins(config) de sandbox y crear globals con
-    #    '__builtins__':ese_diccionario y '__name__':'__sandbox__'. No usar globals()
-    #    del propio trabajador: contiene imports y acceso al canal de control.
-    # 2. Inyectar final_answer importado de sandbox, siempre, incluso sin MCP.
-    # 3. Definir tres cierres pequeños de usuario:
-    #    mcp_call_tool(name, arguments=None), read_resource(uri),
-    #    get_prompt(name, arguments=None). Cada uno llama _request_mcp con su
-    #    operación fija y campos necesarios. None en arguments se normaliza a {}.
-    #    Si un servidor anuncia una herramienta homónima 'final_answer', sólo
-    #    mcp_call_tool puede llamarla y NO finaliza el agente; la función Python
-    #    final_answer sigue siendo siempre local, nunca un wrapper del servidor.
-    # 4. Para cada tool, si name es identificador Python, no es keyword ni colisiona
-    #    con builtin/nombre ya reservado, asignar _make_tool_wrapper al namespace.
-    #    Las demás herramientas se llaman mediante mcp_call_tool según el manual.
-    #    Una herramienta MCP llamada final_answer nunca reemplaza a la función local.
-    # 5. No insertar config, streams, cliente MCP, Docker ni claves como variables
-    #    de usuario. Devolver este único diccionario; main lo conservará entre bloques.
-    #    Los cierres no acreditan aislamiento contra introspección Python hostil.
-    raise NotImplementedError("Worker namespace construction is not implemented yet.")
+    logger.debug("Entrando en _build_namespace")
+    safe = _make_safe_builtins(config)
+
+    def mcp_call_tool(name, arguments=None):
+        logger.debug("Entrando en _build_namespace.mcp_call_tool")
+        return _request_mcp(input_stream, output_stream, "call_tool", {
+            "name": name, "arguments": arguments if arguments is not None else {},
+        })
+
+    def read_resource(uri):
+        logger.debug("Entrando en _build_namespace.read_resource")
+        return _request_mcp(input_stream, output_stream, "read_resource", {"uri": uri})
+
+    def get_prompt(name, arguments=None):
+        logger.debug("Entrando en _build_namespace.get_prompt")
+        return _request_mcp(input_stream, output_stream, "get_prompt", {
+            "name": name, "arguments": arguments if arguments is not None else {},
+        })
+
+    namespace = {
+        "__builtins__": safe, "__name__": "__sandbox__",
+        "final_answer": final_answer, "mcp_call_tool": mcp_call_tool,
+        "read_resource": read_resource, "get_prompt": get_prompt,
+    }
+    for tool in tools:
+        name = tool["name"]
+        if (name.isidentifier() and not keyword.iskeyword(name)
+                and name not in safe and name not in namespace):
+            namespace[name] = _make_tool_wrapper(tool, input_stream, output_stream)
+            logger.debug("Función local MCP registrada: %s", name)
+        else:
+            logger.debug("Herramienta %s disponible mediante mcp_call_tool; nombre reservado o no válido", name)
+    logger.debug("Namespace persistente preparado; entradas=%s", len(namespace))
+    return namespace
 
 
 def execute_block(
@@ -159,6 +197,8 @@ def execute_block(
     output_stream: TextIO,
 ) -> None:
     """Execute code in the shared namespace and send its result."""
+    logger.debug("Entrando en execute_block")
+    logger.info("Ejecutando bloque Python en el namespace persistente: %s caracteres", len(code))
     output = WorkerOutput(output_stream)
     answer = None
     error = None
@@ -169,8 +209,10 @@ def execute_block(
 
     except FinalAnswerSignal as exc:
         answer = exc.args[0]
+        logger.info("final_answer capturado: %s caracteres", len(answer))
 
     except (KeyboardInterrupt, SystemExit) as exc:
+        logger.warning("El bloque pidió terminar el trabajador: %s", type(exc).__name__)
         _send_message(output_stream, {
             "type": "control_exit",
             "exception": type(exc).__name__,
@@ -180,6 +222,7 @@ def execute_block(
 
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
+        logger.warning("Bloque Python fallido: %s; se enviará una observación", type(exc).__name__)
 
     _send_message(output_stream, {
         "type": "done",
@@ -188,22 +231,41 @@ def execute_block(
         "truncated": output.omitted > 0,
         "omitted": output.omitted,
     })
+    logger.info("Bloque terminado: error=%s, respuesta final=%s, caracteres omitidos=%s", error is not None, answer is not None, output.omitted)
 
 def main() -> int:
     """Initialize once and consume sequential code blocks until shutdown or EOF."""
-    # 1. Guardar sys.stdin y sys.stdout originales. Leer init como primer mensaje;
-    #    exigir configuración y tools como JSON, sin datos ejecutables adicionales.
-    # 2. Validar SandboxConfig; comprobar límites positivos como en el supervisor.
-    #    Aplicar _apply_worker_limits(config) y construir _build_namespace una vez.
-    # 3. Sólo entonces enviar ready. Ante fallo de arranque, informar por stderr
-    #    original y salir con error; no enviar ready si los controles no se aplicaron.
-    # 4. Leer mensajes en bucle. EOF termina con 0. execute exige code string y
-    #    llama execute_block. Durante una herramienta, _request_mcp lee su propia
-    #    respuesta antes de permitir que este bucle vuelva a recibir otro execute.
-    # 5. Rechazar tipos inesperados/JSON malformado con salida de error. Nunca
-    #    restaurar el estado repitiendo bloques ni aceptar varias tareas simultáneas.
-    # 6. Dejar que el fin de proceso cierre ficheros del usuario. No cerrar MCP ni
-    #    eliminar directorios: son recursos del supervisor. Retornar código real.
-    # 7. Al implementar este módulo, añadir el guard __name__ == '__main__' que
-    #    invoque main. Hoy este archivo contiene únicamente el esqueleto pendiente.
-    raise NotImplementedError("The JSON worker entry point is not implemented yet.")
+    configure_logging()
+    logger.debug("Entrando en main")
+    logger.info("Trabajador iniciado; esperando configuración JSON del supervisor")
+    input_stream, output_stream = sys.stdin, sys.stdout
+    try:
+        message = _receive_message(input_stream)
+        if message is None or message["type"] != "init":
+            raise WorkerProtocolError("Expected init as the first message.")
+        config = SandboxConfig.model_validate(message["config"])
+        _apply_worker_limits(config)
+        namespace = _build_namespace(
+            config, message["tools"], input_stream, output_stream,
+        )
+        _send_message(output_stream, {"type": "ready"})
+        logger.info("Trabajador listo para recibir bloques consecutivos")
+        while True:
+            message = _receive_message(input_stream)
+            if message is None:
+                return 0
+            if message["type"] != "execute" or not isinstance(message.get("code"), str):
+                raise WorkerProtocolError("Expected execute with a code string.")
+            execute_block(message["code"], namespace, output_stream)
+    except (Exception, WorkerProtocolError) as exc:
+        logger.error("Fallo fatal del trabajador: %s", type(exc).__name__)
+        # Fatal errors are data too, so silence never hides the startup diagnosis.
+        try:
+            _send_message(output_stream, {"type": "worker_error", "error": f"{type(exc).__name__}: {exc}"})
+        except WorkerProtocolError:
+            logger.error("No se pudo comunicar el fallo: canal JSON cerrado")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

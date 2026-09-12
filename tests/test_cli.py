@@ -1,10 +1,16 @@
 """Regression test for invalid MBPP input before agent execution."""
 
 from agent_mbpp import main as mbpp_main
+import pytest
 
 
-def test_mbpp_cli_handles_invalid_task_file(tmp_path, capsys):
+@pytest.mark.parametrize("log_level", [None, "ERROR"])
+def test_mbpp_cli_handles_invalid_task_file(tmp_path, capsys, monkeypatch, log_level):
     """Invalid JSON must report an error without writing a solution file."""
+    if log_level is None:
+        monkeypatch.delenv("AGENT_SMITH_LOG_LEVEL", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_SMITH_LOG_LEVEL", log_level)
     task_path = tmp_path / "invalid_task.json"
     output_path = tmp_path / "mbpp_solution.json"
 
@@ -26,5 +32,9 @@ def test_mbpp_cli_handles_invalid_task_file(tmp_path, capsys):
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert "Error: Invalid JSON file" in captured.err
+    assert captured.out == ""
+    if log_level is None:
+        assert captured.err == ""
+    else:
+        assert "Error: Invalid JSON file" in captured.err
     assert not output_path.exists()

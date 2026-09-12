@@ -6,6 +6,10 @@ private server configuration stay outside the generated-code worker.
 
 from __future__ import annotations
 
+from agent_smith.logging_config import get_logger
+
+logger = get_logger('agent_smith.swebench_tools')
+
 from typing import Any, Sequence
 
 
@@ -31,6 +35,7 @@ def _run_in_container(
     Shell strings run through bash; internal argument sequences remain separate.
     This helper owns its Docker connection, never the task container lifecycle.
     """
+    logger.debug("Entrando en _run_in_container")
     # Pseudocódigo detallado:
     # 1. Leer del entorno privado AGENT_SMITH_CONTAINER_ID, AGENT_SMITH_TESTBED
     #    (por defecto /testbed) y AGENT_SMITH_DEADLINE. El adaptador los entrega
@@ -74,6 +79,7 @@ def _run_in_container(
     #    herramientas de esta tarea. No cerrar contenedores ajenos.
     # 10. Validar workdir no confina una shell que luego cambia de directorio:
     #     la frontera es el contenedor sin red, montajes del host ni credenciales.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("SWE-bench container execution is not implemented yet.")
 
 
@@ -83,6 +89,7 @@ def read_file(filepath: str, start_line: int, end_line: int) -> str:
     Pending implementation. Line numbers start at one; ranges past EOF return
     only existing lines. Missing files and invalid ranges are tool errors.
     """
+    logger.debug("Entrando en read_file")
     # Pseudocódigo detallado:
     # 1. Exigir filepath string y 1 <= start_line <= end_line. Ejecutar un fragmento
     #    interno Python mediante _run_in_container, con los valores como argumentos.
@@ -98,6 +105,7 @@ def read_file(filepath: str, start_line: int, end_line: int) -> str:
     #    la lectura falla, comunicar el error y la salida parcial recibida, sin
     #    presentar el resultado incompleto como un rango completo. El helper cierra
     #    Docker; with cierra el archivo incluso si la operación falla.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The read_file tool is not implemented yet.")
 
 
@@ -108,6 +116,7 @@ def edit_file(filepath: str, old_str: str, new_str: str) -> str:
     This unique-match policy is a local choice; the subject does not specify it.
     A written edit remains applied when subsequent checks report an error.
     """
+    logger.debug("Entrando en edit_file")
     # Pseudocódigo detallado:
     # 1. Exigir tres strings y old_str no vacío. Mediante _run_in_container ejecutar
     #    un fragmento Python que resuelva filepath dentro del testbed y compruebe
@@ -131,6 +140,7 @@ def edit_file(filepath: str, old_str: str, new_str: str) -> str:
     # 7. Devolver ruta editada, coincidencia sustituida y resultado de comprobaciones
     #    o timeout, conservando salida parcial y usando truncamiento explícito del
     #    feedback largo. No declarar resuelta la tarea por poder editar un archivo.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The edit_file tool is not implemented yet.")
 
 
@@ -140,6 +150,7 @@ def list_files(directory: str, pattern: str) -> list[str]:
     Pending implementation. An empty list means a completed search found no
     matches. Invalid paths, traversal failures, and timeouts are tool errors.
     """
+    logger.debug("Entrando en list_files")
     # Pseudocódigo detallado:
     # 1. Exigir directory y pattern strings, con patrón glob no vacío. Ejecutar
     #    un fragmento Python dentro del contenedor mediante _run_in_container.
@@ -155,6 +166,7 @@ def list_files(directory: str, pattern: str) -> list[str]:
     # 5. Devolver la lista íntegra, o [] cuando no haya coincidencias reales.
     #    No truncarla ni insertar un aviso como ruta. Un fallo de recorrido o
     #    timeout es error de herramienta, nunca una lista vacía ficticia.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The list_files tool is not implemented yet.")
 
 
@@ -164,6 +176,7 @@ def search_code(pattern: str, file_pattern: str) -> str:
     Pending implementation. pattern is a regular expression and file_pattern
     is a recursive glob. No matches produce empty text; failures stay visible.
     """
+    logger.debug("Entrando en search_code")
     # Pseudocódigo detallado:
     # 1. Exigir patrones string. Ejecutar un fragmento Python con _run_in_container;
     #    compilar pattern con re y comunicar regex inválida antes de recorrer.
@@ -179,6 +192,7 @@ def search_code(pattern: str, file_pattern: str) -> str:
     # 5. Con timeout o fallo, comunicar el error y las coincidencias parciales
     #    recibidas. Aplicar el criterio de truncamiento a feedback largo, con aviso
     #    explícito para el agente. No inventar una fila que parezca coincidencia.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The search_code tool is not implemented yet.")
 
 
@@ -188,6 +202,7 @@ def search_function_or_class_definition_in_code(name: str) -> str:
     Pending implementation. Results use the search_code format. Text inside
     multiline strings may be mistaken for definitions by this initial approach.
     """
+    logger.debug("Entrando en search_function_or_class_definition_in_code")
     # Pseudocódigo detallado:
     # 1. Exigir name string e identificador Python; rechazar keywords.
     # 2. Construir una regex con re.escape(name), anclada al principio de línea,
@@ -197,6 +212,7 @@ def search_function_or_class_definition_in_code(name: str) -> str:
     #    manejo de E/S, numeración, orden y truncamiento; no crear otro buscador.
     # 4. Devolver el resultado sin cambiar su formato. Describir esta limitación
     #    textual en el docstring/manual, sin añadir falsas líneas de coincidencia.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("Definition search is not implemented yet.")
 
 
@@ -207,6 +223,7 @@ def find_references(name: str, filepath: str, line: int) -> str:
     may be missed. This initial search does not resolve imports or lexical scope
     and cannot guarantee the complete semantic usages required by the subject.
     """
+    logger.debug("Entrando en find_references")
     # Pseudocódigo detallado:
     # 1. Exigir name identificador Python no keyword y line entero >= 1. Validar
     #    filepath resolviéndolo dentro del testbed, como en read_file.
@@ -224,6 +241,7 @@ def find_references(name: str, filepath: str, line: int) -> str:
     # 6. Mantener esta limitación en la descripción MCP. El subject pide todos los
     #    usos; esta aproximación necesita contrastarse con pruebas de herramientas
     #    y no permite prometer compatibilidad con el examen desconocido.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("Reference search is not implemented yet.")
 
 
@@ -233,6 +251,7 @@ def run_tests() -> dict[str, Any]:
     Pending implementation. Return stdout, stderr, exit_code, and timed_out.
     Tool feedback does not replace the benchmark evaluator's resolution check.
     """
+    logger.debug("Entrando en run_tests")
     # Pseudocódigo detallado:
     # 1. Leer AGENT_SMITH_EVAL_SCRIPT del entorno privado del servidor y exigir
     #    contenido no vacío. SWEEnvironment lo copia íntegro de la tarea recibida.
@@ -248,6 +267,7 @@ def run_tests() -> dict[str, Any]:
     # 5. La moulinette interpreta FAIL_TO_PASS/PASS_TO_PASS y los marcadores del
     #    script. Aquí se aporta feedback al modelo; no duplicar ese evaluador.
     #    El helper cierra streams y cliente, conservando el contenedor de tarea.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The run_tests tool is not implemented yet.")
 
 
@@ -257,6 +277,7 @@ def get_patch() -> str:
     Pending implementation. An empty diff is valid tool output. Errors and
     timeouts must never be returned as a successful or partial patch.
     """
+    logger.debug("Entrando en get_patch")
     # Pseudocódigo detallado:
     # 1. Ejecutar ['git', '-c', 'core.fileMode=false', 'diff'] en el testbed usando
     #    _run_in_container y el tiempo restante. Es el diff del árbol de trabajo:
@@ -269,6 +290,7 @@ def get_patch() -> str:
     # 4. La respuesta completa puede llegar a final_answer local sin pasar por
     #    truncamiento de observaciones; el adaptador decide el fallo por parche
     #    vacío por separado. No insertar ese diagnóstico dentro de la solución.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The get_patch tool is not implemented yet.")
 
 
@@ -279,6 +301,7 @@ def run_command(command: str, workdir: str) -> dict[str, Any]:
     Directory validation does not confine arbitrary shell commands; the separate
     disposable container is the boundary protecting host files and credentials.
     """
+    logger.debug("Entrando en run_command")
     # Pseudocódigo detallado:
     # 1. Exigir command y workdir strings, con command no vacío. No interpretar
     #    la orden en el servidor ni rechazarla con un analizador shell propio.
@@ -290,4 +313,5 @@ def run_command(command: str, workdir: str) -> dict[str, Any]:
     #    no cero y las salidas parciales de timeout para el siguiente paso.
     # 4. Propagar fallos de arranque/Docker. El helper cierra sus conexiones; esta
     #    herramienta no crea otro contenedor ni ejecuta comandos en el host.
+    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
     raise NotImplementedError("The run_command tool is not implemented yet.")

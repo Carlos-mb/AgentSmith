@@ -1,7 +1,10 @@
 """Command-line entry point for the SWE-bench agent."""
 
+from agent_smith.logging_config import LoggingArgumentParser, configure_logging, get_logger
+
+logger = get_logger('agent_swebench')
+
 import argparse
-import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -11,7 +14,8 @@ from agent_smith.models import SWEBenchTaskInput
 
 def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse SWE-bench command-line arguments."""
-    parser = argparse.ArgumentParser(
+    logger.debug("Entrando en parse_arguments")
+    parser = LoggingArgumentParser(
         description="Solve one SWE-bench task and write a solution JSON file."
     )
     parser.add_argument(
@@ -47,6 +51,8 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Validate CLI input and report that real SWE-bench execution is still pending."""
+    configure_logging()
+    logger.debug("Entrando en main")
     # Pseudocódigo para conectar el agente cuando sus partes estén implementadas:
     # 1. Al entrar, antes de parsear o leer JSON, tomar started_at=time.monotonic().
     #    Ese instante pasa al adaptador para incluir la preparación en el límite total.
@@ -67,9 +73,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         task = load_model(args.task_file, SWEBenchTaskInput)
+        logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
         raise NotImplementedError("SWE-bench agent execution is not implemented yet.")
     except RuntimeError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        logger.error("Error: %s", exc)
         return 1
 
 

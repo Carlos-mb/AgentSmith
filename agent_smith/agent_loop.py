@@ -1,8 +1,15 @@
-"""One pending asynchronous Thought -> Code -> Observation loop for both tasks."""
+"""One sequential Thought -> Code -> Observation loop for both benchmarks."""
 
 from __future__ import annotations
 
-from agent_smith.models import AgentLimits, SolutionOutput
+from agent_smith.logging_config import get_logger
+
+logger = get_logger('agent_smith.agent_loop')
+
+import time
+
+from agent_smith.code_extraction import extract_agent_code
+from agent_smith.models import AgentLimits, SolutionOutput, StepMetrics
 from agent_smith.providers import ProviderClient
 from agent_smith.sandbox import SandboxExecution, SandboxSession
 
@@ -12,6 +19,7 @@ def build_observation(
     extraction_feedback: str,
 ) -> str:
     """Build the observation returned to the LLM."""
+    logger.debug("Entrando en build_observation")
 
     if execution is None:
         return extraction_feedback
@@ -48,82 +56,128 @@ async def run_agent_loop(
     sandbox: SandboxSession,
     limits: AgentLimits,
     started_at: float,
+    deadline: float | None = None,
 ) -> SolutionOutput:
-    """Run one sequential task and preserve real observations and partial metrics.
-
-    The caller supplies open resources and the task's original monotonic start
-    time. This pending loop owns its counters and borrows the provider and sandbox.
-    The benchmark adapter closes resources and updates the final elapsed time.
-    """
-    # 1. Calcular deadline=started_at+limits.max_time_seconds. No iniciar otro reloj:
-    #    started_at viene del CLI, antes de cargar la tarea o configurar conexiones.
-    #    Crear messages con system_prompt como system y task_prompt como user.
-    # 2. Crear variables locales: steps=[], total_requests=0, entrada_total=0,
-    #    salida_total=0, uso_completo=True, solucion="", error=None y success=False.
-    #    Son del bucle: no compartir un diccionario mutable con el proveedor.
-    # 3. Antes de cada iteración comprobar el tiempo, len(steps) y tokens acumulados.
-    #    Si se ha alcanzado max_iterations o no quedan tokens, terminar con error.
-    #    Si cualquier petición anterior dejó usage incompleto, no pedir otra.
-    # 4. Calcular entrada_restante y salida_restante restando esos totales a limits.
-    #    Esperar await provider.complete(messages, max_input_tokens=...,
-    #    max_output_tokens=..., deadline=deadline). No iniciar otra generación en
-    #    paralelo. El proveedor verifica cada reintento con esos valores restantes.
-    # 5. La respuesta de complete agrupa TODOS los intentos de esta iteración.
-    #    Añadir request_count, input_tokens y output_tokens a los totales UNA vez.
-    #    Actualizar uso_completo con su indicador. No volver a sumar al crear steps
-    #    ni leer un contador mutable dentro del proveedor.
-    # 6. Si request_count=0, guardar el error de preparación/límite y salir sin crear
-    #    un paso ficticio. Si hubo envío, crear un StepMetrics numerado len(steps)+1:
-    #    copiar tokens, latencia, URL/modelo, llm_output=text y retries; empezar con
-    #    sandbox_input="" y sandbox_output="" porque aún no se ha ejecutado nada.
-    #    Añadirlo a steps inmediatamente para conservarlo si la fase siguiente falla.
-    # 7. Si completion.error existe, poner el error real en sandbox_output y terminar.
-    #    Si faltan tokens, aclarar en ese paso y en el error final que los totales son
-    #    sólo subtotales conocidos. No presentar un cero de relleno como medición.
-    #    También detenerse si el tiempo o los tokens reales excedieron el presupuesto;
-    #    conservar las cifras medidas enteras, sin recortarlas al límite.
-    # 8. Extraer código con extract_agent_code(completion.text,
-    #    response_format=provider.config.response_format). Desempaquetar la tupla
-    #    recibida como code, feedback; no acceder a atributos del resultado.
-    #    Un formato pendiente debe dar un error honesto, nunca Python inventado.
-    # 9. Sin código válido: execution=None y observación=build_observation(None,
-    #    feedback). No llamar al trabajador. Esta iteración sí consume tokens y paso.
-    #    Con código: guardar el texto extraído íntegro en step.sandbox_input y llamar
-    #    await sandbox.execute(code, deadline=deadline) una sola vez. Las variables
-    #    del trabajador continúan del paso anterior. No repetir bloques para repararlas.
-    # 10. Construir observación con build_observation(execution, feedback) y guardarla
-    #     en step.sandbox_output. Incluye stdout/stderr parciales, errores y timeout.
-    #     No sustituir una salida vacía por un resultado esperado o tests inventados.
-    # 11. Añadir al historial la respuesta original como assistant y la observación
-    #     real como user. Mantener su orden Thought -> Code -> Observation. La petición
-    #     siguiente volverá a contar todo este historial como entrada.
-    # 12. Si execution no es None y trae final_answer, guardar ya el texto íntegro
-    #     en solucion para conservarlo también si falla una comprobación posterior.
-    #     Tras ejecutar, comprobar tiempo/tokens otra vez. Un límite agotado EXACTAMENTE
-    #     puede permitir finalizar el último paso válido; superarlo impide éxito.
-    #     No declarar error por len(steps)==max_iterations antes de examinar la
-    #     respuesta final de ese paso, pero tampoco iniciar un paso adicional.
-    # 13. Sólo si execution no es None, comprobar worker_failed; si es True,
-    #     guardar fallo y terminar. Conservar su
-    #     salida parcial: el trabajador perdido no se reinicia para recuperar variables.
-    #     Un error ordinario del código o timeout no fatal se devuelve al modelo como
-    #     observación para la siguiente iteración, si queda presupuesto.
-    # 14. Si execution no es None y execution.final_answer no es None, examinar
-    #     la respuesta final ya conservada en solucion.
-    #     Aceptar success=True sólo sin error de ejecución, consumo desconocido,
-    #     timeout o exceso de presupuesto. final_answer es local, nunca llamada MCP.
-    #     Este éxito significa que el agente finalizó; los tests del evaluador deciden
-    #     si la solución resuelve la tarea. No truncar ni reformatear código o patch.
-    # 15. Capturar errores ordinarios de extracción o ejecución: conservar el paso
-    #     abierto y explicar el fallo, sin otra llamada LLM para redactarlo. Terminar
-    #     con resultado parcial. No convertir KeyboardInterrupt/SystemExit en éxito;
-    #     el finally del adaptador libera recursos si la interrupción se propaga.
-    # 16. Crear un único SolutionOutput al terminar: copiar IDs, benchmark, prompt
-    #     completo, solucion, success, error y steps; iterations=len(steps), contadores
-    #     locales y tiempo monotonic()-started_at. En fallo conservar la solución
-    #     parcial real, si llegó, sin fabricar un patch o una respuesta alternativa.
-    #     Si usage es incompleto, success=False y error debe decirlo expresamente.
-    # 17. Devolver el resultado sin cerrar recursos prestados. El adaptador cerrará
-    #     sandbox/MCP y, en SWE-bench, Docker; después actualizará tiempo y fallos de
-    #     cierre. No reejecutar la tarea ni poner métricas a cero tras un fallo.
-    raise NotImplementedError("The agent loop is not implemented yet.")
+    """Borrow resources; own counters and preserve every completed request."""
+    logger.debug("Entrando en run_agent_loop")
+    logger.info("Inicio del bucle: benchmark=%s, tarea=%s", benchmark, task_id)
+    logger.debug("Prompt del sistema:\n%s", system_prompt)
+    logger.debug("Prompt de la tarea:\n%s", task_prompt)
+    task_deadline = started_at + limits.max_time_seconds
+    deadline = min(deadline, task_deadline) if deadline is not None else task_deadline
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": task_prompt},
+    ]
+    steps = []
+    requests = input_tokens = output_tokens = 0
+    solution = ""
+    success = False
+    error = None
+    step = None
+    try:
+        for number in range(1, limits.max_iterations + 1):
+            logger.info(
+                "Iteración %s/%s; tokens restantes entrada=%s/salida=%s; tiempo restante=%.2fs",
+                number, limits.max_iterations, limits.max_input_tokens - input_tokens,
+                limits.max_output_tokens - output_tokens, deadline - time.monotonic(),
+            )
+            if time.monotonic() >= deadline:
+                error = "Task execution deadline reached."
+                break
+            if input_tokens >= limits.max_input_tokens or output_tokens >= limits.max_output_tokens:
+                error = "Task token budget exhausted."
+                break
+            completion = await provider.complete(
+                messages, max_input_tokens=limits.max_input_tokens - input_tokens,
+                max_output_tokens=limits.max_output_tokens - output_tokens,
+                deadline=deadline,
+            )
+            requests += completion.request_count
+            input_tokens += completion.input_tokens
+            output_tokens += completion.output_tokens
+            logger.debug(
+                "Acumulados tras LLM: peticiones=%s, entrada=%s, salida=%s, usage completo=%s",
+                requests, input_tokens, output_tokens, completion.usage_complete,
+            )
+            logger.debug("Respuesta del modelo:\n%s", completion.text)
+            if completion.request_count == 0:
+                error = completion.error or "No LLM request was made."
+                break
+            step = StepMetrics(
+                step=number, input_tokens=completion.input_tokens,
+                output_tokens=completion.output_tokens,
+                request_time_ms=completion.request_time_ms,
+                api_url=completion.api_url, model_name=completion.model_name,
+                llm_output=completion.text, retries=completion.retries,
+            )
+            steps.append(step)
+            error = completion.error
+            if not completion.usage_complete and "known subtotals" not in (error or ""):
+                error = (error or "") + " Token totals are known subtotals only."
+            if input_tokens > limits.max_input_tokens or output_tokens > limits.max_output_tokens:
+                error = "Cumulative token limit exceeded."
+            if time.monotonic() >= deadline:
+                error = (error + " " if error else "") + "Task execution deadline reached."
+            if error:
+                logger.error("Iteración %s detenida antes de ejecutar código: %s", number, error)
+                step.sandbox_output = error
+                break
+            code, feedback = extract_agent_code(
+                completion.text, response_format=provider.config.response_format,
+            )
+            execution = None
+            if code:
+                logger.info("Iteración %s: ejecutando el bloque Python extraído", number)
+                logger.debug("Código que se ejecutará:\n%s", code)
+                step.sandbox_input = code
+                execution = await sandbox.execute(code, deadline=deadline)
+            else:
+                logger.warning("Iteración %s sin código ejecutable: %s", number, feedback)
+                feedback += (
+                    "\nNothing was executed. Resend all code in one complete, concise "
+                    "Python block; do not describe the delimiters."
+                )
+            observation = build_observation(execution, feedback)
+            logger.debug("Observación real de la iteración %s:\n%s", number, observation)
+            step.sandbox_output = observation
+            messages.append({"role": "assistant", "content": completion.text})
+            messages.append({"role": "user", "content": "Observation:\n" + observation})
+            logger.debug("Observación añadida al historial; mensajes=%s", len(messages))
+            if execution is not None and execution.final_answer is not None:
+                solution = execution.final_answer
+            if time.monotonic() > deadline:
+                error = "Task execution deadline reached."
+                break
+            if execution is not None:
+                if execution.worker_failed:
+                    error = execution.error or "Sandbox worker failed."
+                    break
+                if execution.final_answer is not None:
+                    if execution.error or execution.timed_out:
+                        error = execution.error or "Execution timed out."
+                    elif not solution.strip():
+                        error = "The final answer is empty."
+                    else:
+                        success = True
+                        logger.info("final_answer recibido; el bucle ha finalizado con una solución")
+                    break
+        else:
+            error = "Iteration limit reached without final_answer."
+    except Exception as exc:
+        logger.exception("Fallo inesperado del bucle; se conservarán los pasos parciales")
+        error = f"{type(exc).__name__}: {exc}"
+        if step is not None:
+            step.sandbox_output += "\nError: " + error
+    if error:
+        logger.error("Bucle terminado sin éxito: %s", error)
+    logger.info(
+        "Fin del bucle: success=%s, iteraciones=%s, peticiones=%s, tokens=%s/%s",
+        success, len(steps), requests, input_tokens, output_tokens,
+    )
+    return SolutionOutput(
+        task_id=task_id, benchmark=benchmark, success=success, solution=solution,
+        system_prompt=system_prompt, iterations=len(steps), total_requests=requests,
+        total_input_tokens=input_tokens, total_output_tokens=output_tokens,
+        total_time_seconds=time.monotonic() - started_at, steps=steps, error=error,
+    )

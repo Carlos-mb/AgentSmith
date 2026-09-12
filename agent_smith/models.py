@@ -1,5 +1,9 @@
 """Pydantic models used by the Agent Smith command-line programs."""
 
+from agent_smith.logging_config import get_logger
+
+logger = get_logger('agent_smith.models')
+
 from datetime import datetime
 
 from pydantic import BaseModel, Field
@@ -7,6 +11,7 @@ from pydantic import BaseModel, Field
 
 def current_timestamp() -> str:
     """Return the current local date and time in ISO 8601 format."""
+    logger.debug("Entrando en current_timestamp")
     return datetime.now().isoformat()
 
 
