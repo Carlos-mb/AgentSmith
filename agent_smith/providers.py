@@ -205,10 +205,11 @@ class ProviderClient:
             model_name = response.model_name
             input_tokens += response.input_tokens
             output_tokens += response.output_tokens
-            # Un 429 es un rechazo por cuota: el proveedor no llegó a generar, así
-            # que su falta de usage es un cero conocido, no un consumo desconocido.
-            # Sin esto la rotación de claves quedaba anulada por la guarda de abajo.
-            if status != 429:
+            # Cualquier respuesta que no sea 200 es un rechazo: el proveedor no
+            # llegó a generar, así que su falta de usage es un cero conocido y no
+            # un consumo desconocido. Sin esto la guarda de abajo cancelaba tanto
+            # la rotación de claves ante un 429 como el reintento ante un 503.
+            if status == 200:
                 usage_complete = usage_complete and response.usage_complete
             text = response.text
             error = response.error

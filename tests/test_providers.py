@@ -128,15 +128,17 @@ def test_every_key_rate_limited_fails_without_inventing_usage(monkeypatch):
     assert result.input_tokens == 0 and result.output_tokens == 0
 
 
-def test_missing_usage_outside_a_rate_limit_does_not_retry_unknown_spend(monkeypatch):
+def test_a_200_without_usage_does_not_retry_unknown_spend(monkeypatch):
+    # Aqui si pudo generar y no sabemos cuanto: es el unico caso que sigue
+    # siendo consumo desconocido, y no se vuelve a pedir.
     calls = []
     def handler(request):
         calls.append(request)
-        return httpx.Response(503, json={"error": {"message": "unavailable"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "texto"}}]})
     mock_http(monkeypatch, handler)
-    client = ProviderClient(config(), {"KEY_ONE": "one", "KEY_TWO": "two"})
-    result = complete(client)
-    assert len(calls) == 1 and client.key_index == 0
+    result = complete(ProviderClient(config(), {"KEY_ONE": "one", "KEY_TWO": "two"}))
+
+    assert len(calls) == 1
     assert not result.usage_complete and "subtotals" in result.error
 
 
@@ -165,15 +167,16 @@ def test_transport_error_does_not_leak_credentials_or_retry(monkeypatch):
     assert "fake-one" not in result.error
 
 
-def test_provider_error_keeps_diagnosis_without_keys_or_unknown_usage_retry(monkeypatch):
+def test_provider_error_keeps_its_diagnosis_without_leaking_keys(monkeypatch):
     mock_http(monkeypatch, lambda request: httpx.Response(503, json={
         "error": {"message": "Model overloaded for fake-one; alternative fake-two."},
     }))
-    result = complete(ProviderClient(config(), {"KEY_ONE": "fake-one", "KEY_TWO": "fake-two"}))
+    result = complete(ProviderClient(config(max_retries=0), {"KEY_ONE": "fake-one", "KEY_TWO": "fake-two"}))
     assert "HTTP 503" in result.error and "Model overloaded" in result.error
     assert "fake-one" not in result.error and "fake-two" not in result.error
-    assert result.error.count("known subtotals") == 1
-    assert result.request_count == 1 and not result.usage_complete
+    # Un rechazo no genera: su consumo es cero conocido, no un subtotal incierto.
+    assert "known subtotals" not in result.error
+    assert result.request_count == 1 and result.usage_complete
 
 
 def test_limits_stop_before_sending(monkeypatch):
@@ -267,3 +270,29 @@ def test_a_response_with_neither_text_nor_tool_calls_is_still_reported(monkeypat
     result = complete(ProviderClient(config(max_retries=0), {"KEY_ONE": "one"}))
 
     assert "did not contain text content" in (result.error or "")
+
+
+def test_a_503_is_retried_and_counts_as_zero_not_unknown(monkeypatch):
+    # Un 503 tampoco llega a generar. Antes la guarda de consumo desconocido
+    # cancelaba el reintento y seis ejecuciones seguidas murieron por esto.
+    calls = []
+    def handler(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(503, json={"error": {"message": "overloaded"}})
+        return httpx.Response(200, json=answer())
+    mock_http(monkeypatch, handler)
+    result = complete(ProviderClient(config(max_retries=1), {"KEY_ONE": "one"}))
+
+    assert len(calls) == 2
+    assert result.error is None and result.usage_complete
+    assert result.input_tokens == 100 and result.output_tokens == 20
+
+
+def test_a_persistent_503_reports_the_status_without_fake_subtotals(monkeypatch):
+    mock_http(monkeypatch, lambda request: httpx.Response(503, json={}))
+    result = complete(ProviderClient(config(max_retries=1), {"KEY_ONE": "one"}))
+
+    assert "HTTP 503" in (result.error or "")
+    assert "subtotals" not in (result.error or "")
+    assert result.input_tokens == 0 and result.output_tokens == 0

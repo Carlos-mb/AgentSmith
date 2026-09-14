@@ -53,6 +53,18 @@ content = path.read_text()
 count = content.count(old)
 if count != 1:
     print(f"edit_file refused: expected exactly one match of old_str, found {count}.")
+    if count > 1:
+        # Decirle DONDE estan: sin esto el modelo reintenta a ciegas. Observado
+        # en una tarea real, ocho iteraciones seguidas contra un docstring repetido.
+        places, start = [], 0
+        while True:
+            found = content.find(old, start)
+            if found < 0:
+                break
+            places.append(str(content.count(chr(10), 0, found) + 1))
+            start = found + 1
+        print("It matches starting at lines: " + ", ".join(places))
+        print("Extend old_str with nearby lines until it appears exactly once.")
     raise SystemExit(2)
 updated = content.replace(old, new, 1)
 if path.suffix == ".py":

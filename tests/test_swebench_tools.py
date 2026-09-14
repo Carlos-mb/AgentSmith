@@ -151,3 +151,14 @@ def test_paths_outside_the_testbed_are_refused(testbed):
 
     with pytest.raises(ValueError):
         swebench_tools.read_file("/testbed/../../etc/passwd", 1, 5)
+
+
+def test_an_ambiguous_edit_says_where_the_matches_are(testbed):
+    # Sin las lineas, el modelo reintenta a ciegas: ocho iteraciones perdidas
+    # en una tarea real contra un docstring que aparecia dos veces.
+    result = swebench_tools.edit_file("/testbed/utils.py", "numbers", "values")
+
+    assert "found 5" in result
+    assert "It matches starting at lines:" in result
+    assert "Extend old_str" in result
+    assert (testbed / "utils.py").read_text() == UTILS

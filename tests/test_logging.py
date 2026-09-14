@@ -106,7 +106,8 @@ def handler(request):
 original = httpx.AsyncClient
 httpx.AsyncClient = lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs)
 client = ProviderClient(ProviderConfig(api_url="https://example.invalid/v1", model_name="fixture",
-    api_key_environment_variables=["CUSTOM_KEY"]), {"CUSTOM_KEY": "private-test-credential"})
+    api_key_environment_variables=["CUSTOM_KEY"], max_retries=0),
+    {"CUSTOM_KEY": "private-test-credential"})
 result = asyncio.run(client.complete(messages, max_input_tokens=6000, max_output_tokens=500,
                                     deadline=time.monotonic() + 5))
 assert result.request_count == 1

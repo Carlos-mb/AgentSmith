@@ -8,7 +8,21 @@
         "GEMINI_API_KEY_2"
       ],
       "timeout_seconds": 120,
-      "max_retries": 2,
+      "max_retries": 4,
+      "max_output_per_request": 600,
+      "stop_sequences": [
+        "<end_code>"
+      ]
+    },
+    {
+      "api_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "model_name": "gemini-3.5-flash",
+      "api_key_environment_variables": [
+        "GEMINI_API_KEY",
+        "GEMINI_API_KEY_2"
+      ],
+      "timeout_seconds": 120,
+      "max_retries": 4,
       "max_output_per_request": 600,
       "stop_sequences": [
         "<end_code>"
@@ -22,7 +36,7 @@
         "GEMINI_API_KEY_2"
       ],
       "timeout_seconds": 120,
-      "max_retries": 2,
+      "max_retries": 4,
       "max_output_per_request": 600,
       "stop_sequences": [
         "<end_code>"
@@ -36,7 +50,7 @@
         "GEMINI_API_KEY_2"
       ],
       "timeout_seconds": 120,
-      "max_retries": 2,
+      "max_retries": 4,
       "max_output_per_request": 600,
       "stop_sequences": [
         "<end_code>"
