@@ -237,3 +237,33 @@ def test_an_empty_200_that_never_recovers_is_reported(monkeypatch):
 
     assert len(calls) == 2
     assert "did not contain text content" in (result.error or "")
+
+
+def test_native_tool_calls_are_translated_when_there_is_no_text(monkeypatch):
+    # Gemini llama funciones por su canal nativo aunque nunca le mandamos
+    # esquemas: llega sin content y con tool_calls. Antes moria la tarea.
+    def handler(request):
+        return httpx.Response(200, json={
+            "choices": [{"message": {"role": "assistant", "tool_calls": [
+                {"function": {"name": "search_code", "arguments": '{"pattern": "cotm"}'}},
+            ]}}],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 10},
+        })
+    mock_http(monkeypatch, handler)
+    result = complete(ProviderClient(config(), {"KEY_ONE": "one"}))
+
+    assert result.error is None
+    assert "<tool_name>search_code</tool_name>" in result.text
+    assert '{"pattern": "cotm"}' in result.text
+
+
+def test_a_response_with_neither_text_nor_tool_calls_is_still_reported(monkeypatch):
+    def handler(request):
+        return httpx.Response(200, json={
+            "choices": [{"message": {"role": "assistant"}}],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 10},
+        })
+    mock_http(monkeypatch, handler)
+    result = complete(ProviderClient(config(max_retries=0), {"KEY_ONE": "one"}))
+
+    assert "did not contain text content" in (result.error or "")

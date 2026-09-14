@@ -1,80 +1,68 @@
 # Validated SWE-bench tasks — 14 September 2026
 
-Two tasks solved end to end and validated by moulinette without `--skip-metrics`.
-Each directory holds its `task.json`, `solution.json` and the validator output.
+Each directory holds that task's `task.json`, `solution.json` and the moulinette
+output. Every run below was validated with `moulinette_eval validate swebench`,
+without `--skip-metrics`.
+
+## The exam's pool
+
+The exam draws three tasks at random from a fixed pool of seven and requires two
+to pass. Five of those seven pass here.
 
 | Task | Model | Iterations | Input tokens | Output tokens | Time | Result |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| `sympy__sympy-13480` | `gemini-3.5-flash-lite` | 8 | 27,767 | 455 | 23.6 s | PASSED |
-| `sympy__sympy-23534` | `dots-3-note-preview:free` | 16 | 98,430 | 2,693 | 58.2 s | PASSED |
+| `django__django-11066` | gemini-3.5-flash-lite | 7 | 26,604 | 413 | 13 s | **PASSED** |
+| `sympy__sympy-18189` | gemini-3.5-flash-lite | 7 | 23,054 | 411 | 83 s | **PASSED** |
+| `sympy__sympy-13480` | gemini-3.5-flash-lite | 8 | 27,767 | 455 | 24 s | **PASSED** |
+| `pydata__xarray-4629` | gemini-3.5-flash-lite | 8 | 32,070 | 280 | 16 s | **PASSED** |
+| `scikit-learn__scikit-learn-13439` | gemini-3.5-flash-lite | 14 | 74,031 | 2,359 | 60 s | **PASSED** |
+| `django__django-12308` | gemini-3.5-flash-lite | 26 | 201,313 | 974 | 36 s | FAILED — patch submitted but it does not fix the issue |
+| `scikit-learn__scikit-learn-11310` | gemini-3.5-flash-lite | 29 | 292,286 | 6,327 | 50 s | FAILED — input budget exhausted before a patch |
 
-`sympy__sympy-13480` belongs to the pool the exam draws from; `sympy__sympy-23534`
-does not, so it measures the agent but does not count towards the exam's three tasks.
+Outside the pool, `sympy__sympy-23534` also passes with
+`dots-studio/dots-3-note-preview:free` (16 iterations, 98,430 input tokens, 58 s).
+It measures the agent but cannot be drawn by the exam.
 
-## sympy__sympy-23534 — `dots-studio/dots-3-note-preview:free`
+Across the six passing runs: **10.0 iterations on average and 16% of the input
+budget**. Limits are 30 iterations, 300,000 input tokens, 10,000 output tokens
+and 900 seconds.
 
-| Measure | Value | Limit |
-| --- | ---: | ---: |
-| Iterations | 16 | 30 |
-| Input tokens | 98,430 | 300,000 |
-| Output tokens | 2,693 | 10,000 |
-| Wall-clock time | 58.2 s | 900 s |
+Task images were pulled beforehand, so the measured times exclude the download.
 
-```
-Resolution status: RESOLVED_FULL
-Correctness: PASSED
-Metrics: VALID
-Overall: PASSED
-```
+## What each failure is
 
-Model: `dots-studio/dots-3-note-preview:free` through OpenRouter, selected because
-another project reported passing SWE-bench with it and it is still on the free tier.
-The full validator output is in `validation.txt`.
+`django__django-12308` is an honest miss: the agent explored, edited and
+submitted a diff, and moulinette judged the patch wrong. `scikit-learn-11310`
+ran out of input budget at iteration 29 — the history window spends the
+remaining allowance evenly across the remaining iterations, so a task needing
+all thirty iterations with large observations consumes it exactly.
 
-The agent located the definition, read the surrounding code, reproduced the wrong
-behaviour with `run_command`, edited one line, checked the type had changed to
-`UndefinedFunction`, ran the task's `eval_script` and the project's own test file,
-then submitted `final_answer(get_patch())`. The patch is the real fix:
-
-```diff
--            result.append(symbols(name, **args))
-+            result.append(symbols(name, cls=cls, **args))
-```
-
-Reproduce with:
+## Reproducing one
 
 ```bash
 # in moulinette/
-uv run --python 3.10 moulinette_eval dump swebench --task-id sympy__sympy-23534 --output task.json
+uv run --python 3.10 moulinette_eval dump swebench --task-id sympy__sympy-13480 --output task.json
 # in student/
 AGENT_SMITH_MODELS_CONFIG=configs/models_template.json \
 uv run --env-file .env --offline --no-sync --python 3.10 python -m agent_swebench \
   --task-file task.json --output solution.json \
-  --model-name dots-studio/dots-3-note-preview:free \
-  --provider-url https://openrouter.ai/api/v1
+  --model-name gemini-3.5-flash-lite \
+  --provider-url https://generativelanguage.googleapis.com/v1beta/openai
 # in moulinette/
 uv run --python 3.10 moulinette_eval validate swebench task.json solution.json
 ```
 
-The task image was already present locally, so the measured time excludes the
-image download. One task is not a pass rate: the exam draws three tasks from a
-pool of six and requires two.
+## What these runs changed in the agent
 
+Every one of these was found by running the agent against a real task, not by
+reading code:
 
-## sympy__sympy-13480 — `gemini-3.5-flash-lite`
-
-The `.subs` on `coth(log(tan(x)))` failure. The agent found the block, read it,
-fixed the typo, reproduced the call without the exception, ran the task's
-`eval_script` twice and submitted:
-
-```diff
--                    if cotm is S.ComplexInfinity:
-+                    if cothm is S.ComplexInfinity:
-```
-
-Eight iterations and 9% of the input budget. Its image was pulled beforehand, so
-the measured time excludes the download.
-
-This run only became possible after adding the `<tool_use>` dialect to extraction:
-on the previous attempt a model diagnosed the same typo correctly but expressed
-every call in that format, and 23 of 29 iterations executed nothing.
+- Models abandon the ```python fence once they see a tool result. Three text
+  dialects are now converted (`<tool_call>`, `<tool_use>`) and so are the
+  provider's own native `tool_calls` — translating those is what turned
+  `pydata__xarray-4629` from a first-iteration death into a pass.
+- An unusable model response is an observation, not the end of the task. That
+  took `django__django-12308` from 2 iterations to 26.
+- The Gemini timeout is 120 s: 60 s lost two tasks to `ReadTimeout`.
+- A final answer must contain `diff --git`. A model once submitted `get_patch`'s
+  own "No changes yet." message and the task was recorded as passed.

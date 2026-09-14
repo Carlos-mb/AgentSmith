@@ -164,10 +164,17 @@ async def run_agent_loop(
                 error = "Cumulative token limit exceeded."
             if time.monotonic() >= deadline:
                 error = (error + " " if error else "") + "Task execution deadline reached."
-            if error:
+            if error and not completion.recoverable:
                 logger.error("Iteración %s detenida antes de ejecutar código: %s", number, error)
                 step.sandbox_output = error
                 break
+            if error:
+                # El modelo no dijo nada utilizable, pero su consumo esta medido:
+                # se le devuelve como observacion en vez de terminar la tarea.
+                logger.warning("Iteración %s sin respuesta utilizable: %s", number, error)
+                step.sandbox_output = error
+                messages.append({"role": "user", "content": "Observation:\n" + error})
+                continue
             code, feedback = extract_agent_code(completion.text)
             execution = None
             if code:

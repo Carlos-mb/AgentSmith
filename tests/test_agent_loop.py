@@ -114,3 +114,46 @@ def test_trimming_does_not_alter_the_original_list():
     messages = _history(10)
     trim_history(messages, 1_000)
     assert len(messages) == 22
+
+
+def test_an_unusable_response_becomes_an_observation_instead_of_ending_the_task():
+    # Gemini devuelve a veces una llamada de funcion malformada: sin texto pero
+    # con consumo medido. Antes eso terminaba la tarea en la iteracion 2.
+    from types import SimpleNamespace
+
+    respuestas = [
+        SimpleNamespace(
+            text="", input_tokens=10, output_tokens=1, request_time_ms=1.0,
+            api_url="u", model_name="m", retries=0, request_count=1,
+            usage_complete=True, error="Provider response did not contain text content.",
+            recoverable=True,
+        ),
+        SimpleNamespace(
+            text="```python\nfinal_answer('listo')\n```", input_tokens=10, output_tokens=1,
+            request_time_ms=1.0, api_url="u", model_name="m", retries=0, request_count=1,
+            usage_complete=True, error=None, recoverable=False,
+        ),
+    ]
+
+    class Proveedor:
+        config = SimpleNamespace()
+        async def complete(self, messages, **kwargs):
+            return respuestas.pop(0)
+
+    class Caja:
+        async def execute(self, code, deadline=None):
+            from agent_smith.sandbox import SandboxExecution
+            return SandboxExecution(final_answer="listo")
+
+    from agent_smith.models import AgentLimits
+    resultado = asyncio.run(run_agent_loop(
+        task_id="t", benchmark="swebench", system_prompt="s", task_prompt="p",
+        provider=Proveedor(), sandbox=Caja(),
+        limits=AgentLimits(max_iterations=5, max_input_tokens=1000,
+                           max_output_tokens=1000, max_time_seconds=60),
+        started_at=time.monotonic(),
+    ))
+
+    assert resultado.success is True
+    assert resultado.iterations == 2
+    assert "did not contain text content" in resultado.steps[0].sandbox_output

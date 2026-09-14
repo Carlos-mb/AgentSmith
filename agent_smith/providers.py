@@ -61,6 +61,9 @@ class CompletionResponse:
     request_count: int
     usage_complete: bool = True
     error: str | None = None
+    # Una respuesta inservible del modelo no es un fallo del proveedor: si su
+    # consumo esta medido, el bucle puede seguir con una observacion.
+    recoverable: bool = False
 
 
 def estimate_input_tokens(messages: list[dict[str, str]]) -> int:
@@ -74,6 +77,33 @@ def estimate_input_tokens(messages: list[dict[str, str]]) -> int:
     estimate = 64 + sum((len(m["content"].encode("utf-8")) + 3) // 4 + 32 for m in messages)
     logger.debug("Entrada estimada: %s tokens en %s mensajes; no es usage medido", estimate, len(messages))
     return estimate
+
+
+def render_tool_calls(message: dict[str, Any]) -> str:
+    """Render a provider's native tool calls as the <tool_use> text dialect.
+
+    Gemini decide a veces llamar funciones por su canal nativo, aunque nunca le
+    enviamos esquemas: la respuesta llega sin content y con tool_calls. Se
+    traduce al mismo texto que ya convierte code_extraction, para que exista un
+    unico sitio donde una llamada se convierte en Python.
+    """
+    logger.debug("Entrando en render_tool_calls")
+    calls = message.get("tool_calls")
+    if not isinstance(calls, list):
+        return ""
+    blocks = []
+    for call in calls:
+        function = call.get("function") if isinstance(call, dict) else None
+        if not isinstance(function, dict) or not isinstance(function.get("name"), str):
+            continue
+        arguments = function.get("arguments")
+        if not isinstance(arguments, str) or not arguments.strip():
+            arguments = "{}"
+        blocks.append(
+            f"<tool_use>\n<tool_name>{function['name']}</tool_name>\n"
+            f"<arguments>\n{arguments}\n</arguments>\n</tool_use>"
+        )
+    return "\n".join(blocks)
 
 
 class ProviderClient:
@@ -132,6 +162,7 @@ class ProviderClient:
     ) -> CompletionResponse:
         logger.debug("Entrando en ProviderClient.complete")
         input_tokens = output_tokens = requests = 0
+        status = 0
         elapsed_ms = 0.0
         text = ""
         model_name = self.config.model_name
@@ -221,9 +252,11 @@ class ProviderClient:
             "Fin de complete: peticiones=%s, entrada=%s, salida=%s, usage completo=%s",
             requests, input_tokens, output_tokens, usage_complete,
         )
+        recoverable = bool(error) and usage_complete and not text.strip() and status == 200
         return CompletionResponse(
             text, input_tokens, output_tokens, elapsed_ms, self.config.api_url,
             model_name, max(0, requests - 1), requests, usage_complete, error,
+            recoverable,
         )
 
     def _build_payload(self, messages, *, max_output_tokens: int) -> dict[str, Any]:
@@ -297,15 +330,20 @@ class ProviderClient:
                 complete = False
                 value = 0
             counts.append(value)
+        message: Any = {}
         try:
-            text = payload["choices"][0]["message"]["content"]
+            message = payload["choices"][0]["message"]
+            text = message["content"]
             # Una cadena vacía es tan inservible como un content ausente, y así
             # los dos casos se reintentan y se informan igual.
             if not isinstance(text, str) or not text.strip():
                 raise ValueError("Expected text content.")
         except (KeyError, IndexError, TypeError, ValueError):
-            text = ""
-            error = "Provider response did not contain text content."
+            text = render_tool_calls(message) if isinstance(message, dict) else ""
+            if text:
+                logger.info("Respuesta sin texto pero con tool_calls nativos; se traducen")
+            else:
+                error = "Provider response did not contain text content."
         if not complete:
             error = (error or "") + " Token usage is incomplete."
         # Routers can choose a different model on each request. Preserve what
