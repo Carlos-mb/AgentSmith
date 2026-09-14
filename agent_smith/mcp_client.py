@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.types import PaginatedRequestParams
 
 
@@ -207,28 +208,30 @@ class MCPClient:
     async def start(
         self, *, deadline: float | None = None,
     ) -> tuple[ClientSession, MCPManual]:
-        """Open stdio and discover advertised capabilities using the SDK."""
+        """Open the selected transport and discover capabilities with the SDK."""
         logger.debug("Entrando en MCPClient.start")
         logger.info("Abriendo MCP y solicitando capacidades al servidor")
         if self._stack is not None:
             raise RuntimeError("MCP client is already started.")
-        if self.server_url is not None:
-            logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-            raise NotImplementedError("MCP HTTP transport is pending the next milestone.")
         remaining = 30.0 if deadline is None else deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("Task expired before MCP startup.")
         self._stack = AsyncExitStack()
         try:
-            environment = dict(self.environment)
-            environment.setdefault(LOG_LEVEL_ENV, os.environ.get(LOG_LEVEL_ENV, ""))
-            parameters = StdioServerParameters(
-                command=self.stdio_command[0], args=self.stdio_command[1:],
-                env=environment,
-            )
-            read, write = await self._stack.enter_async_context(
-                stdio_client(parameters, errlog=sys.stderr),
-            )
+            if self.stdio_command is not None:
+                environment = dict(self.environment)
+                environment.setdefault(LOG_LEVEL_ENV, os.environ.get(LOG_LEVEL_ENV, ""))
+                parameters = StdioServerParameters(
+                    command=self.stdio_command[0], args=self.stdio_command[1:],
+                    env=environment,
+                )
+                read, write = await self._stack.enter_async_context(
+                    stdio_client(parameters, errlog=sys.stderr),
+                )
+            else:
+                read, write, _ = await self._stack.enter_async_context(
+                    streamable_http_client(self.server_url),
+                )
             self._session = await self._stack.enter_async_context(ClientSession(
                 read, write, read_timeout_seconds=timedelta(seconds=remaining),
             ))

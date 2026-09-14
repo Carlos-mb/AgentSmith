@@ -5,11 +5,14 @@ from agent_smith.logging_config import LoggingArgumentParser, configure_logging,
 logger = get_logger('agent_swebench')
 
 import argparse
+import asyncio
+import time
 from pathlib import Path
 from typing import Sequence
 
-from agent_smith.io import load_model
+from agent_smith.io import load_model, write_model
 from agent_smith.models import SWEBenchTaskInput
+from agent_smith.swebench_agent import run_swebench_agent
 
 
 def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -50,32 +53,20 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Validate CLI input and report that real SWE-bench execution is still pending."""
+    """Write the real result, including failed tasks with partial metrics."""
+    started_at = time.monotonic()
     configure_logging()
     logger.debug("Entrando en main")
-    # Pseudocódigo para conectar el agente cuando sus partes estén implementadas:
-    # 1. Al entrar, antes de parsear o leer JSON, tomar started_at=time.monotonic().
-    #    Ese instante pasa al adaptador para incluir la preparación en el límite total.
-    # 2. Conservar parse_arguments y load_model: sus validaciones ya funcionan.
-    # 3. Sustituir únicamente el NotImplementedError por una llamada a
-    #    asyncio.run(run_swebench_agent(task, args, started_at=started_at)).
-    #    Usar un solo asyncio.run para toda la tarea; el adaptador abre, utiliza y
-    #    cierra MCP dentro de esa misma ejecución asíncrona. No hacerlo por paso.
-    # 4. Recibir el SolutionOutput real y escribirlo con write_model(args.output,
-    #    result), incluido un resultado de tarea fallida con sus métricas parciales.
-    #    No escribir un resultado de ejemplo mientras la ejecución siga pendiente.
-    # 5. Tras escribir, devolver 0 para indicar que el CLI produjo el resultado;
-    #    result.success expresa si el agente finalizó. Devolver 1 ante errores que
-    #    impiden cargar la tarea, iniciar el programa o escribir su salida.
-    # 6. Mantener errores legibles por stderr sin secretos. Una interrupción debe
-    #    dejar que el finally del adaptador cierre sus recursos antes de propagarse.
     args = parse_arguments(argv)
-
+    logger.info("Iniciando SWE-bench: leyendo la tarea %s", args.task_file)
     try:
         task = load_model(args.task_file, SWEBenchTaskInput)
-        logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-        raise NotImplementedError("SWE-bench agent execution is not implemented yet.")
-    except RuntimeError as exc:
+        logger.info("Tarea SWE-bench %s validada; iniciando el agente", task.instance_id)
+        result = asyncio.run(run_swebench_agent(task, args, started_at=started_at))
+        write_model(args.output, result)
+        logger.info("Resultado guardado en %s; success=%s", args.output, result.success)
+        return 0
+    except (RuntimeError, ValueError) as exc:
         logger.error("Error: %s", exc)
         return 1
 

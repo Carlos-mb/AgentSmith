@@ -56,9 +56,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Write the real result, including failed tasks with partial metrics."""
     started_at = time.monotonic()
     configure_logging()
-    logger.debug("Entrando en main")
+    logger.debug("Accesing main")
     args = parse_arguments(argv)
-    logger.info("Inicio MBPP: leyendo tarea %s", args.task_file)
+    logger.info("Starting MBPP: reading task %s", args.task_file)
     try:
         task = load_model(args.task_file, MBPPTaskInput)
         logger.info("Tarea MBPP %s validada; iniciando el agente", task.task_id)

@@ -26,11 +26,8 @@ from agent_smith.sandbox import SandboxSession, load_sandbox_config
 CLEANUP_RESERVE_SECONDS = 5
 
 
-def build_mbpp_system_prompt(mcp_manual: str, *, response_format: str = "python") -> str:
+def build_mbpp_system_prompt(mcp_manual: str) -> str:
     logger.debug("Entrando en build_mbpp_system_prompt")
-    if response_format != "python":
-        logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-        raise NotImplementedError(f"Response format is not implemented: {response_format}")
     return '''Solve the supplied Python task using Thought -> Code -> Observation.
 Write a Thought of at most 20 words and one closed ```python block, then <end_code>.
 Keep code concise, without explanatory comments. Never discuss the delimiters.
@@ -106,6 +103,8 @@ async def run_mbpp_agent(
         )
         if time.monotonic() >= deadline:
             raise TimeoutError("Task expired before setup.")
+
+        # http client from environment vars
         provider = ProviderClient.from_environment(
             args.provider_url, args.model_name, os.environ.get("AGENT_SMITH_MODELS_CONFIG"),
         )
@@ -116,18 +115,20 @@ async def run_mbpp_agent(
         ) if name in os.environ}
         environment["AGENT_SMITH_DEADLINE"] = str(deadline)
         environment["AGENT_SMITH_MBPP_SESSION"] = session_id
+
         client = MCPClient(
             stdio_command=[sys.executable, str(root / "mcp_tools_mbpp.py")],
             environment=environment,
         )
+
+        # MCP client also starts MCP server
+
         session, manual = await client.start(deadline=deadline)
         logger.info("MCP listo: %s herramientas descubiertas", len(manual.tools))
         server_started = True
         if not any(t["name"] == "run_tests" for t in manual.tools):
             raise RuntimeError("The MCP server did not advertise run_tests.")
-        result.system_prompt = build_mbpp_system_prompt(
-            manual.as_text(), response_format=provider.config.response_format,
-        )
+        result.system_prompt = build_mbpp_system_prompt(manual.as_text())
         sandbox = SandboxSession(config, session, manual)
         with anyio.fail_after(max(0, deadline - time.monotonic())):
             await sandbox.start()

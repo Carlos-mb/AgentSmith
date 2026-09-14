@@ -7,12 +7,17 @@ from agent_smith.logging_config import LoggingArgumentParser, configure_logging,
 logger = get_logger('agent_smith.sandbox_cli')
 
 import argparse
+import ast
+import asyncio
+import codeop
+import os
 import shlex
+import sys
 from pathlib import Path
 from typing import Sequence
 
 from agent_smith.mcp_client import MCPClient
-from agent_smith.sandbox import SandboxSession
+from agent_smith.sandbox import SandboxSession, load_sandbox_config
 
 
 def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -45,73 +50,152 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+# El servidor MCP arranca con un entorno minimo, asi que hay que pasarle
+# explicitamente lo que necesita para encontrar el testbed y hablar con Docker.
+SERVER_ENVIRONMENT_NAMES = (
+    "PATH", "HOME", "TESTBED_PATH", "AGENT_SMITH_CONTAINER_ID",
+    "AGENT_SMITH_EVAL_SCRIPT", "AGENT_SMITH_DEADLINE", "AGENT_SMITH_MBPP_SESSION",
+    "DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+)
+
+
 def _build_mcp_client(args: argparse.Namespace) -> MCPClient | None:
     """Build an MCP client from CLI arguments without connecting."""
     logger.debug("Entrando en _build_mcp_client")
 
     if args.mcp_stdio is not None:
         command = shlex.split(args.mcp_stdio)
-        return MCPClient(stdio_command=command)
+        environment = {
+            name: os.environ[name]
+            for name in SERVER_ENVIRONMENT_NAMES if name in os.environ
+        }
+        return MCPClient(stdio_command=command, environment=environment)
 
     if args.mcp_server is not None:
         return MCPClient(server_url=args.mcp_server)
 
     return None
 
+async def _run_entry(session: SandboxSession, code: str) -> None:
+    """Execute one complete entry and print what the sandbox reports."""
+    logger.debug("Entrando en _run_entry")
+    execution = await session.execute(code)
+    if execution.output:
+        print(execution.output, end="")
+    if execution.error:
+        print("Error: " + execution.error)
+    if execution.final_answer is not None:
+        print("Final answer: " + execution.final_answer)
+    if execution.worker_failed:
+        print("Worker restarted; variables were lost.")
+        await session.close()
+        await session.start()
+
+
+async def run_script(session: SandboxSession, text: str | None = None) -> int:
+    """Execute a piped script one top-level statement at a time.
+
+    Line-by-line reading cannot handle a pasted file: a blank line inside a
+    block would close it early, and a final_answer would abort everything that
+    follows it. Splitting on top-level statements keeps both working.
+    """
+    logger.debug("Entrando en run_script")
+    if text is None:
+        text = sys.stdin.read()
+    try:
+        parsed = ast.parse(text)
+    except SyntaxError as exc:
+        print(f"SyntaxError: {exc}")
+        return 1
+    lines = text.splitlines()
+    for node in parsed.body:
+        first = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
+        statement = "\n".join(lines[first - 1:node.end_lineno])
+        if statement.strip() == "exit":
+            return 0
+        await _run_entry(session, statement)
+    return 0
+
+
 async def run_repl(session: SandboxSession) -> int:
     """Read and execute persistent Python entries until exit or EOF."""
     logger.debug("Entrando en run_repl")
-    # 1. Leer input con prompt corto. Acumular líneas hasta que
-    #    codeop.compile_command indique bloque completo; no ejecutarlo aquí.
-    #    Ante SyntaxError, mostrar error, vaciar entrada y pedir otro bloque.
-    # 2. 'exit' exacto en el prompt principal o EOF devuelven 0. No añadir
-    #    comandos reset/quit ni confundir texto dentro de un bloque con comandos.
-    # 3. Hacer await session.execute(code). Mostrar output y error reales, además
-    #    de final_answer si existe (comprobar is not None, no su valor booleano).
-    #    No duplicar el aviso de truncamiento ya incluido en output.
-    # 4. final_answer sólo acaba la tarea del agente; aquí vuelve al prompt y
-    #    conserva variables del trabajador. Un error Python normal también.
-    # 5. Si worker_failed=True, avisar que se perdieron las variables, await close
-    #    y await start antes de otra entrada. No reejecutar entradas anteriores.
-    #    Si el reinicio falla, propagar para que el propietario cierre los recursos.
-    # 6. KeyboardInterrupt/SystemExit se propagan; el finally del propietario
-    #    cierra trabajador y MCP. No convertirlas en errores corrientes del REPL.
-    # 7. El input síncrono es inicialmente aceptable con una operación activa;
-    #    no crear un hilo de MCP para esperar al usuario ni nuevas tareas del agente.
-    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-    raise NotImplementedError("The interactive sandbox REPL is not implemented yet.")
+    lines: list[str] = []
+    while True:
+        try:
+            line = input("... " if lines else ">>> ")
+        except EOFError:
+            print()
+            # Con la entrada redirigida el ultimo bloque llega sin linea en blanco.
+            if lines:
+                await _run_entry(session, "\n".join(lines))
+            return 0
+
+        if not lines and line == "exit":
+            return 0
+        if not lines and not line:
+            continue
+
+        lines.append(line)
+        code = "\n".join(lines)
+        try:
+            # "single" espera una linea en blanco para cerrar un bloque, igual que el
+            # REPL de Python. Con "exec" el bloque se cerraba antes del else/except.
+            compiled = codeop.compile_command(code, symbol="single")
+        except (OverflowError, SyntaxError, ValueError) as exc:
+            print(f"{type(exc).__name__}: {exc}")
+            lines.clear()
+            continue
+        if compiled is None:
+            continue
+
+        lines.clear()
+        await _run_entry(session, code)
 
 
 async def _run_sandbox(args: argparse.Namespace) -> int:
     """Own MCP and worker lifetimes in the same asynchronous task as the REPL."""
     logger.debug("Entrando en _run_sandbox")
-    # 1. Cargar config con load_sandbox_config(args.config) y construir el cliente
-    #    opcional con _build_mcp_client. Preparar session=None para el finally.
-    # 2. Dentro de try, si hay cliente, await client.start() devuelve sdk_session
-    #    y manual. Sin cliente, ambos son None. No abrir en otra tarea/hilo.
-    # 3. Crear SandboxSession(config, mcp_session=sdk_session, manual=manual)
-    #    y hacer await session.start(). Si hay manual, mostrar manual.as_text().
-    # 4. Devolver await run_repl(session). Los errores ordinarios se propagan
-    #    a main; KeyboardInterrupt y SystemExit también, después de la limpieza.
-    # 5. En finally, intentar await session.close() si llegó a existir; después,
-    #    incluso si falla, intentar await client.close() si había cliente.
-    #    Todo este recorrido permanece en la misma tarea, incluidos contextos SDK.
-    # 6. Mantener el error original y añadir diagnóstico de limpieza si lo hay.
-    #    No usar context managers de SandboxSession ni inventar su método reset.
-    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-    raise NotImplementedError("The asynchronous sandbox owner is not implemented yet.")
+    config = load_sandbox_config(args.config)
+    client = _build_mcp_client(args)
+    session = None
+    manual = None
+    try:
+        mcp_session = None
+        if client is not None:
+            mcp_session, manual = await client.start()
+        session = SandboxSession(config, mcp_session=mcp_session, manual=manual)
+        await session.start()
+        if manual is not None:
+            print(manual.as_text())
+        if sys.stdin.isatty():
+            return await run_repl(session)
+        return await run_script(session)
+    finally:
+        cleanup_errors = []
+        if session is not None:
+            try:
+                await session.close()
+            except Exception as exc:
+                cleanup_errors.append(f"sandbox: {exc}")
+        if client is not None:
+            try:
+                await client.close()
+            except Exception as exc:
+                cleanup_errors.append(f"MCP: {exc}")
+        if cleanup_errors:
+            logger.error("Cleanup failed: %s", "; ".join(cleanup_errors))
+            if sys.exc_info()[0] is None:
+                raise RuntimeError("Sandbox cleanup failed: " + "; ".join(cleanup_errors))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse CLI arguments and drive the asynchronous sandbox with graceful errors."""
     configure_logging()
     logger.debug("Entrando en main")
-    # 1. Usar parse_arguments(argv), que ya está implementado.
-    # 2. Ejecutar asyncio.run(_run_sandbox(args)) una sola vez y devolver su código.
-    #    La apertura, uso y cierre de MCP ocurren dentro de esa misma coroutine.
-    # 3. Errores ordinarios de config/arranque/REPL: diagnóstico en stderr y 1.
-    #    No ocultar que una pieza sigue pendiente por NotImplementedError.
-    # 4. KeyboardInterrupt y SystemExit se propagan después del cierre ya realizado
-    #    por _run_sandbox. No dejar el trabajador vivo al abandonar el CLI.
-    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-    raise NotImplementedError("The sandbox CLI is not implemented yet.")
+    args = parse_arguments(argv)
+    try:
+        return asyncio.run(_run_sandbox(args))
+    except Exception as exc:
+        logger.error("Error: %s", exc)
+        return 1

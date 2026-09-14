@@ -30,7 +30,6 @@ class ProviderConfig(BaseModel):
     max_retries: int = Field(default=2, ge=0)
     temperature: float = Field(default=0.1, ge=0, le=2)
     stop_sequences: list[str] = Field(default_factory=lambda: ["<end_code>"])
-    response_format: str = "python"
     reasoning_effort: str | None = None
     reasoning_enabled: bool | None = None
     max_output_per_request: int = Field(default=600, gt=0)
@@ -78,7 +77,8 @@ def estimate_input_tokens(messages: list[dict[str, str]]) -> int:
 
 
 class ProviderClient:
-    """Keep one provider and its keys; return metrics without shared budgets."""
+    """Keep one HTTP provider and its keys.
+       Return metrics without shared budgets."""
 
     def __init__(self, config: ProviderConfig, environment: Mapping[str, str] | None = None):
         logger.debug("Entrando en ProviderClient.__init__")
@@ -174,12 +174,16 @@ class ProviderClient:
             model_name = response.model_name
             input_tokens += response.input_tokens
             output_tokens += response.output_tokens
-            usage_complete = usage_complete and response.usage_complete
+            # Un 429 es un rechazo por cuota: el proveedor no llegó a generar, así
+            # que su falta de usage es un cero conocido, no un consumo desconocido.
+            # Sin esto la rotación de claves quedaba anulada por la guarda de abajo.
+            if status != 429:
+                usage_complete = usage_complete and response.usage_complete
             text = response.text
             error = response.error
             if status == 429:
                 self.key_index = (self.key_index + 1) % len(self.api_keys)
-                logger.warning("HTTP 429: siguiente índice de clave=%s; comprobando si es posible reintentar", self.key_index)
+                logger.warning("HTTP 429: rotando a la clave con índice %s", self.key_index)
             if status != 200:
                 error = f"Provider returned HTTP {status}."
                 details = body.get("error") if isinstance(body, dict) else None
@@ -195,9 +199,14 @@ class ProviderClient:
             if input_tokens > max_input_tokens or output_tokens > max_output_tokens:
                 error = "Provider usage exceeded the remaining token budget."
                 break
-            if status == 200:
+            # Una respuesta 200 sin texto es un fallo transitorio observado en
+            # Gemini: sin reintento perdiamos la tarea entera por un hueco puntual.
+            # Su usage viene medido, asi que reintentar no oculta consumo.
+            if status == 200 and text.strip():
                 break
-            if status not in (429, 500, 502, 503, 504) or attempt == self.config.max_retries:
+            if attempt == self.config.max_retries:
+                break
+            if status != 200 and status not in (429, 500, 502, 503, 504):
                 break
             delay = min(max(retry_after or 0.5, 0), 5.0)
             if time.monotonic() + delay >= deadline:
@@ -232,8 +241,9 @@ class ProviderClient:
             payload["reasoning_effort"] = self.config.reasoning_effort
         if self.config.reasoning_enabled is not None:
             payload["reasoning"] = {"enabled": self.config.reasoning_enabled}
-        if urlparse(self.config.api_url).hostname == "openrouter.ai":
-            # Ask OpenRouter to honor stop/output settings rather than discard them.
+        if self.config.stop_sequences and urlparse(self.config.api_url).hostname == "openrouter.ai":
+            # Exigir el respeto de stop sólo cuando lo usamos: varios modelos
+            # gratuitos no lo admiten y pedirlo los dejaría fuera del enrutado.
             payload["provider"] = {"require_parameters": True}
         logger.debug(
             "Parámetros LLM: temperatura=%s, límite=%s, stop=%s, razonamiento enabled=%s/effort=%s",
@@ -289,7 +299,9 @@ class ProviderClient:
             counts.append(value)
         try:
             text = payload["choices"][0]["message"]["content"]
-            if not isinstance(text, str):
+            # Una cadena vacía es tan inservible como un content ausente, y así
+            # los dos casos se reintentan y se informan igual.
+            if not isinstance(text, str) or not text.strip():
                 raise ValueError("Expected text content.")
         except (KeyError, IndexError, TypeError, ValueError):
             text = ""

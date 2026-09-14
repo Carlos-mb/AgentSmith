@@ -97,15 +97,46 @@ def test_router_preserves_reported_model_without_changing_request_target(monkeyp
     assert result.input_tokens == 100 and result.output_tokens == 20
 
 
-def test_missing_usage_rotates_but_does_not_retry_unknown_spend(monkeypatch):
+def test_real_rate_limit_without_usage_rotates_to_the_next_key(monkeypatch):
+    # OpenRouter responde al límite diario sin bloque usage. Un 429 no genera
+    # nada, así que el subtotal sigue siendo exacto y se puede probar otra clave.
+    keys = []
+    def handler(request):
+        keys.append(request.headers["Authorization"])
+        if len(keys) == 1:
+            return httpx.Response(429, json={"error": {"message": "free-models-per-day"}})
+        return httpx.Response(200, json=answer())
+    mock_http(monkeypatch, handler)
+    client = ProviderClient(config(max_retries=1), {"KEY_ONE": "one", "KEY_TWO": "two"})
+    result = complete(client)
+    assert keys == ["Bearer one", "Bearer two"]
+    assert result.usage_complete and result.error is None
+    assert result.input_tokens == 100 and result.output_tokens == 20
+    assert result.request_count == 2 and result.retries == 1
+
+
+def test_every_key_rate_limited_fails_without_inventing_usage(monkeypatch):
     calls = []
     def handler(request):
         calls.append(request)
-        return httpx.Response(429, json={"error": {"message": "limited"}})
+        return httpx.Response(429, json={"error": {"message": "free-models-per-day"}})
+    mock_http(monkeypatch, handler)
+    client = ProviderClient(config(max_retries=1), {"KEY_ONE": "one", "KEY_TWO": "two"})
+    result = complete(client)
+    assert len(calls) == 2
+    assert "HTTP 429" in result.error
+    assert result.input_tokens == 0 and result.output_tokens == 0
+
+
+def test_missing_usage_outside_a_rate_limit_does_not_retry_unknown_spend(monkeypatch):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(503, json={"error": {"message": "unavailable"}})
     mock_http(monkeypatch, handler)
     client = ProviderClient(config(), {"KEY_ONE": "one", "KEY_TWO": "two"})
     result = complete(client)
-    assert len(calls) == 1 and client.key_index == 1
+    assert len(calls) == 1 and client.key_index == 0
     assert not result.usage_complete and "subtotals" in result.error
 
 
@@ -170,3 +201,39 @@ def test_long_history_does_not_count_each_byte_as_a_token(monkeypatch):
     ))
     assert result.request_count == 1 and result.error is None
     assert result.input_tokens == 1600
+
+
+def test_an_empty_200_is_retried_and_the_retry_counts(monkeypatch):
+    # Gemini devuelve de vez en cuando un 200 sin content. Antes eso terminaba
+    # la tarea; ahora se reintenta y sus tokens se suman igual.
+    calls = []
+    def handler(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(200, json={
+                "choices": [{"message": {"content": None}}],
+                "usage": {"prompt_tokens": 40, "completion_tokens": 5},
+            })
+        return httpx.Response(200, json=answer())
+    mock_http(monkeypatch, handler)
+    result = complete(ProviderClient(config(max_retries=1), {"KEY_ONE": "one"}))
+
+    assert len(calls) == 2
+    assert result.error is None and result.text
+    assert result.input_tokens == 140 and result.output_tokens == 25
+    assert result.request_count == 2 and result.retries == 1
+
+
+def test_an_empty_200_that_never_recovers_is_reported(monkeypatch):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": ""}}],
+            "usage": {"prompt_tokens": 40, "completion_tokens": 5},
+        })
+    mock_http(monkeypatch, handler)
+    result = complete(ProviderClient(config(max_retries=1), {"KEY_ONE": "one"}))
+
+    assert len(calls) == 2
+    assert "did not contain text content" in (result.error or "")

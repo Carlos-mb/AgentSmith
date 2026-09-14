@@ -51,8 +51,14 @@ class SandboxExecution:
     worker_failed: bool = False
 
 
-class FinalAnswerSignal(BaseException):
-    """Stop the current block and carry the answer in the exception argument."""
+class FinalAnswerSignal(Exception):
+    """Stop the current block and carry the answer in the exception argument.
+
+    An ordinary Exception, not a BaseException: a whole file piped into the
+    sandbox is one block, so a final_answer inside it must stay catchable and
+    let the rest of the file run. execute_block catches it before any generic
+    handler, so the answer is never mistaken for a failure.
+    """
 
 
 def final_answer(answer: str) -> None:
@@ -211,7 +217,7 @@ def _make_safe_builtins(config: SandboxConfig) -> dict[str, Any]:
         "abs", "round", "pow", "divmod", "all", "any",
         "int", "float", "bool", "str", "bytes",
         "list", "tuple", "dict", "set", "frozenset",
-        "chr", "ord", "repr",
+        "chr", "ord", "repr", "dir",
         "object", "isinstance", "issubclass", "type",
         "super", "property", "staticmethod", "classmethod",
         "__build_class__",
@@ -321,13 +327,13 @@ async def _dispatch_mcp(session, message: dict) -> dict:
     if data.get("isError"):
         logger.warning("La herramienta MCP informó un error; se devolverá como observación")
         return {"type": "mcp_result", "error": json.dumps(data, ensure_ascii=False)}
-    result = data.get("structuredContent")
-    if result is None:
-        content = data.get("content", data.get("contents"))
-        if content is not None and len(content) == 1 and "text" in content[0]:
-            result = content[0]["text"]
-        else:
-            result = data
+    # El texto es lo que espera el codigo generado: un servidor que devuelve un
+    # diccionario lo entrega aqui ya serializado como JSON.
+    content = data.get("content", data.get("contents"))
+    if content and len(content) == 1 and "text" in content[0]:
+        result = content[0]["text"]
+    else:
+        result = data
     logger.debug("Operación MCP completada; devolviendo resultado al trabajador")
     return {"type": "mcp_result", "result": result}
 
@@ -347,6 +353,8 @@ class SandboxSession:
         self.config = config.model_copy(deep=True)
         self.mcp_session = mcp_session
         self.manual = manual
+
+        # worker will keep the reference to the persistent PID of sandbox
         self.worker = None
         self.work_directory = None
         self._temporary = None
@@ -415,7 +423,8 @@ class SandboxSession:
                 await _send_worker_message(self.worker, {"type": "execute", "code": code})
             while True:
                 with anyio.fail_after(max(0, remaining())):
-                    message = await _read_worker_message(self.worker, self._buffer)
+                    message = await _read_worker_message(self.worker,
+                                                         self._buffer)
                 kind = message["type"]
                 if kind == "output":
                     output.append(message["text"])

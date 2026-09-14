@@ -1,7 +1,12 @@
-"""Pending SWE-bench tools using one task container and one execution helper.
+"""SWE-bench tools: one execution helper and nine direct tools.
 
-All operations belong inside the disposable task container. Docker access and
-private server configuration stay outside the generated-code worker.
+Every operation runs where the checkout lives. With AGENT_SMITH_CONTAINER_ID the
+helper runs `docker exec` inside that task container; otherwise it runs on the
+host under TESTBED_PATH, which is how the sandbox exam drives these tools. The
+generated-code worker never receives the container id, a Docker client or keys.
+
+Paths are always exchanged as /testbed/... so the model sees the same layout in
+both modes; the helper maps that prefix onto the real root.
 """
 
 from __future__ import annotations
@@ -10,308 +15,289 @@ from agent_smith.logging_config import get_logger
 
 logger = get_logger('agent_smith.swebench_tools')
 
-from typing import Any, Sequence
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
 
 
-DEFAULT_TESTBED_DIRECTORY = "/testbed"
+TESTBED_DIRECTORY = "/testbed"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 120
-MAX_TOOL_OUTPUT_CHARACTERS = 12_000
+TEST_TIMEOUT_SECONDS = 900
+# Cada observacion se reenvia al modelo en TODAS las iteraciones siguientes, asi
+# que su coste real es su tamaño multiplicado por lo que queda de tarea. Con el
+# limite anterior de 12.000, una sola busqueda se comio 72.264 de los 300.000
+# tokens de entrada. El parche no pasa por aqui: get_patch se devuelve entero.
+MAX_TOOL_OUTPUT_CHARACTERS = 4_000
+MAX_SEARCH_MATCHES = 50
+SKIPPED_DIRECTORIES = {".git", "__pycache__", ".tox", ".venv", "node_modules"}
+
+# Estos programas se ejecutan donde esta el checkout. Sus argumentos viajan como
+# argv separados, nunca interpolados: asi ni las comillas ni los saltos de linea
+# del modelo pueden convertirse en otra orden.
+_READ_PROGRAM = """
+import pathlib, sys
+lines = pathlib.Path(sys.argv[1]).read_text(errors="replace").splitlines()
+start, end = int(sys.argv[2]), int(sys.argv[3])
+for number in range(max(1, start), min(len(lines), end) + 1):
+    print(f"{number}: {lines[number - 1]}")
+"""
+
+_EDIT_PROGRAM = """
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+old, new = sys.argv[2], sys.argv[3]
+content = path.read_text()
+count = content.count(old)
+if count != 1:
+    print(f"edit_file refused: expected exactly one match of old_str, found {count}.")
+    raise SystemExit(2)
+updated = content.replace(old, new, 1)
+if path.suffix == ".py":
+    try:
+        compile(updated, str(path), "exec")
+    except SyntaxError as error:
+        print(f"edit_file refused: the result would not compile: {error}")
+        raise SystemExit(3)
+path.write_text(updated)
+print("Edit applied successfully.")
+"""
+
+_LIST_PROGRAM = """
+import fnmatch, os, sys
+root, directory, pattern, skip = sys.argv[1], sys.argv[2], sys.argv[3], set(sys.argv[4].split(","))
+for base, directories, names in os.walk(directory):
+    directories[:] = [name for name in directories if name not in skip]
+    for name in sorted(names):
+        if fnmatch.fnmatch(name, pattern):
+            print("/testbed" + os.path.join(base, name)[len(root):])
+"""
+
+_SEARCH_PROGRAM = """
+import fnmatch, os, re, sys
+root, expression, file_pattern = sys.argv[1], re.compile(sys.argv[2]), sys.argv[3]
+skip = set(sys.argv[4].split(","))
+limit = int(sys.argv[5])
+found = 0
+for base, directories, names in os.walk(root):
+    directories[:] = [name for name in directories if name not in skip]
+    for name in sorted(names):
+        if not fnmatch.fnmatch(name, file_pattern):
+            continue
+        path = os.path.join(base, name)
+        try:
+            with open(path, errors="replace") as handle:
+                for number, line in enumerate(handle, 1):
+                    if expression.search(line):
+                        print(f"/testbed{path[len(root):]}:{number}: {line.rstrip()}")
+                        found += 1
+                        if found >= limit:
+                            print(f"[Only the first {limit} matches are shown. "
+                                  "Narrow the pattern to see the rest.]")
+                            raise SystemExit(0)
+        except OSError:
+            pass
+"""
 
 
-# Criterio de salida para las herramientas que devuelven feedback: si un stream
-# supera MAX_TOOL_OUTPUT_CHARACTERS, conservar principio y final e intercalar un
-# aviso en inglés con el número de caracteres omitidos. No truncar listas de rutas
-# ni get_patch. El helper devuelve los streams completos a cada herramienta.
+def _container_id() -> str:
+    """Return the task container, or empty text when running on the host."""
+    logger.debug("Entrando en _container_id")
+    return os.environ.get("AGENT_SMITH_CONTAINER_ID", "")
 
 
-def _run_in_container(
-    command: str | Sequence[str],
-    workdir: str,
-    timeout_seconds: int,
-) -> dict[str, Any]:
-    """Execute one command in the task container and return its raw result.
+def _root() -> str:
+    """Return the real checkout root: the host testbed or /testbed in the container."""
+    logger.debug("Entrando en _root")
+    if _container_id():
+        return TESTBED_DIRECTORY
+    return str(Path(os.environ.get("TESTBED_PATH", TESTBED_DIRECTORY)).resolve(strict=False))
 
-    Pending implementation. Return stdout, stderr, exit_code, and timed_out.
-    Shell strings run through bash; internal argument sequences remain separate.
-    This helper owns its Docker connection, never the task container lifecycle.
-    """
-    logger.debug("Entrando en _run_in_container")
-    # Pseudocódigo detallado:
-    # 1. Leer del entorno privado AGENT_SMITH_CONTAINER_ID, AGENT_SMITH_TESTBED
-    #    (por defecto /testbed) y AGENT_SMITH_DEADLINE. El adaptador los entrega
-    #    desde SWEEnvironment. Rechazar ID ausente y timeout_seconds no positivo.
-    #    Calcular tiempo restante con time.monotonic(), en el mismo host que creó
-    #    el deadline. Sin tiempo no iniciar otra orden.
-    # 2. Abrir docker.from_env con espera de conexión acotada al tiempo restante.
-    #    Obtener exactamente el contenedor indicado y comprobar que está running.
-    #    No crear contenedores por herramienta, no buscar otros IDs como fallback
-    #    y no imprimir configuración privada. El adaptador crea/elimina el testbed.
-    # 3. Resolver workdir dentro del contenedor respecto a su raíz configurada.
-    #    Hacer esta consulta con Docker exec y un fragmento interno de Python que
-    #    use Path.resolve y relative_to para comprobar pertenencia a la raíz real.
-    #    Pasar workdir/raíz como argumentos separados, nunca interpolados en código.
-    #    Exigir directorio existente. Esa consulta también usa el timeout restante;
-    #    no resolver rutas con Path del host ni comparar prefijos de texto.
-    # 4. Con command string, formar los argumentos /bin/bash -c y la cadena como
-    #    argumento independiente. Con Sequence[str], conservar cada argumento,
-    #    exigiendo secuencia no vacía y elementos string. No usar shell=True en el
-    #    host ni construir un comando concatenando rutas o contenido del usuario.
-    # 5. Anteponer timeout --signal=TERM --kill-after=1s dentro del contenedor.
-    #    Recalcular el tiempo tras la validación; usar el menor de timeout_seconds
-    #    y lo restante, reservando ese segundo para matar la orden si ignora TERM.
-    #    Si no alcanza para arrancar y terminarla, fallar antes de ejecutarla.
-    #    SWEEnvironment comprueba esta utilidad al preparar el contenedor.
-    # 6. Crear/iniciar Docker exec en el workdir validado y recoger stdout/stderr
-    #    por fragmentos, separados y sin truncarlos. Acotar también la espera del
-    #    cliente Docker al deadline, conservando cada fragmento ya recibido.
-    #    El supervisor pausa el reloj del bloque Python durante MCP; el reloj de
-    #    tarea continúa y esta herramienta nunca decide pausarlo.
-    # 7. Consultar el código de salida real. Decodificar UTF-8 con reemplazo y
-    #    devolver el diccionario con stdout, stderr, exit_code y timed_out.
-    #    Un código no cero de una orden que sí arrancó es resultado, no fallo de
-    #    conexión. Al expirar devolver salida parcial y timed_out=True; si no se
-    #    pudo obtener exit_code, usar None, sin inventar un código medido.
-    # 8. Si falla el arranque, elevar error de herramienta con mensaje útil. Si
-    #    el canal Docker se pierde después de recibir salida, comunicar ese fallo
-    #    conservando también esos fragmentos; no disfrazarlo de ejecución completa.
-    # 9. En finally cerrar streams y cliente, incluso si la validación o exec
-    #    fallaron. No parar/eliminar el contenedor: lo comparten las nueve
-    #    herramientas de esta tarea. No cerrar contenedores ajenos.
-    # 10. Validar workdir no confina una shell que luego cambia de directorio:
-    #     la frontera es el contenedor sin red, montajes del host ni credenciales.
-    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-    raise NotImplementedError("SWE-bench container execution is not implemented yet.")
+
+def _real_path(filepath: str) -> str:
+    """Map a /testbed path onto the real root and refuse anything outside it."""
+    logger.debug("Entrando en _real_path")
+    root = _root()
+    candidate = Path(filepath)
+    if candidate.is_absolute() and candidate.parts[:2] == ("/", "testbed"):
+        candidate = Path(root).joinpath(*candidate.parts[2:])
+    elif not candidate.is_absolute():
+        candidate = Path(root) / candidate
+    resolved = candidate.resolve(strict=False)
+    if resolved != Path(root) and Path(root) not in resolved.parents:
+        logger.warning("Ruta rechazada: queda fuera del testbed")
+        raise ValueError(f"Path outside the testbed: {filepath}")
+    return str(resolved)
+
+
+def _remaining_seconds(limit: int) -> int:
+    """Bound a tool timeout by what is left of the whole task deadline."""
+    logger.debug("Entrando en _remaining_seconds")
+    deadline = os.environ.get("AGENT_SMITH_DEADLINE")
+    if not deadline:
+        return limit
+    return max(1, min(limit, int(float(deadline) - time.monotonic())))
+
+
+def _truncate(text: str) -> str:
+    """Keep the beginning and the end, announcing how much was dropped."""
+    logger.debug("Entrando en _truncate")
+    if len(text) <= MAX_TOOL_OUTPUT_CHARACTERS:
+        return text
+    half = MAX_TOOL_OUTPUT_CHARACTERS // 2
+    omitted = len(text) - 2 * half
+    logger.warning("Salida de herramienta truncada: %s caracteres omitidos", omitted)
+    return f"{text[:half]}\n[Output truncated: {omitted} characters omitted.]\n{text[-half:]}"
+
+
+def _run(
+    arguments: list[str],
+    workdir: str = TESTBED_DIRECTORY,
+    timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess:
+    """Run one command where the checkout lives, in the container or on the host."""
+    logger.debug("Entrando en _run")
+    container = _container_id()
+    if container:
+        arguments = ["docker", "exec", "-w", workdir, container] + arguments
+        cwd = None
+    else:
+        cwd = _real_path(workdir)
+    logger.info("Ejecutando en el testbed: %s", arguments[0])
+    return subprocess.run(
+        arguments, cwd=cwd, text=True, capture_output=True,
+        timeout=timeout_seconds, check=False,
+    )
+
+
+def _python() -> str:
+    """Return the interpreter name to use where the command runs."""
+    logger.debug("Entrando en _python")
+    return "python" if _container_id() else sys.executable
+
+
+def _report(completed: subprocess.CompletedProcess) -> str:
+    """Return stdout when the command succeeded, or the full diagnosis."""
+    logger.debug("Entrando en _report")
+    if completed.returncode == 0:
+        return _truncate(completed.stdout)
+    logger.warning("La orden termino con codigo %s", completed.returncode)
+    return _truncate(
+        f"exit_code: {completed.returncode}\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+
+
+def _run_program(program: str, *arguments: str, timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS) -> str:
+    """Run one of the small Python programs above with separate arguments."""
+    logger.debug("Entrando en _run_program")
+    try:
+        completed = _run([_python(), "-c", program, *arguments], timeout_seconds=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        logger.error("La orden supero su timeout de %ss", timeout_seconds)
+        return f"exit_code: timeout\nCommand timed out after {timeout_seconds} seconds."
+    return _report(completed)
 
 
 def read_file(filepath: str, start_line: int, end_line: int) -> str:
-    """Read an inclusive range formatted as '<line_number>: <line_content>'.
-
-    Pending implementation. Line numbers start at one; ranges past EOF return
-    only existing lines. Missing files and invalid ranges are tool errors.
-    """
+    """Return the requested lines of one file, each prefixed by its number."""
     logger.debug("Entrando en read_file")
-    # Pseudocódigo detallado:
-    # 1. Exigir filepath string y 1 <= start_line <= end_line. Ejecutar un fragmento
-    #    interno Python mediante _run_in_container, con los valores como argumentos.
-    # 2. Dentro del contenedor resolver filepath respecto al testbed; comprobar
-    #    pertenencia con Path.resolve/relative_to y exigir archivo. Rechazar un
-    #    enlace que salga de la raíz. No abrir filepath en el host.
-    # 3. Abrir texto UTF-8 con reemplazo mediante with. Enumerar desde 1, conservar
-    #    las líneas del rango inclusivo y dejar de leer tras end_line. Una petición
-    #    que empiece después de EOF devuelve ""; no es un archivo inexistente.
-    # 4. Emitir cada línea como '<n>: <contenido>' con su número original. Recoger
-    #    stdout del helper sólo si la lectura acabó sin error ni timeout.
-    # 5. Aplicar el criterio de truncamiento descrito al principio del módulo. Si
-    #    la lectura falla, comunicar el error y la salida parcial recibida, sin
-    #    presentar el resultado incompleto como un rango completo. El helper cierra
-    #    Docker; with cierra el archivo incluso si la operación falla.
-    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-    raise NotImplementedError("The read_file tool is not implemented yet.")
+    return _run_program(_READ_PROGRAM, _real_path(filepath), str(start_line), str(end_line))
 
 
 def edit_file(filepath: str, old_str: str, new_str: str) -> str:
-    """Replace one exact occurrence and report syntax and lint diagnostics.
-
-    Pending implementation. Zero or multiple matches leave the file unchanged.
-    This unique-match policy is a local choice; the subject does not specify it.
-    A written edit remains applied when subsequent checks report an error.
-    """
+    """Replace one unique fragment, refusing ambiguous matches and broken syntax."""
     logger.debug("Entrando en edit_file")
-    # Pseudocódigo detallado:
-    # 1. Exigir tres strings y old_str no vacío. Mediante _run_in_container ejecutar
-    #    un fragmento Python que resuelva filepath dentro del testbed y compruebe
-    #    pertenencia real a la raíz y archivo existente. Pasar valores por argumentos.
-    # 2. Leer bytes con with y decodificar UTF-8 estrictamente para no destruir
-    #    contenido desconocido. Conservar los saltos de línea del texto leído.
-    #    No volver a abrir el archivo hasta comprobar la coincidencia.
-    # 3. Contar old_str: con cero o varias coincidencias devolver un error claro y
-    #    no escribir. Es nuestra interpretación mínima; los exam_*.sh no están
-    #    disponibles para confirmar su política. No convertir esta duda en éxito.
-    # 4. Sustituir exactamente una coincidencia. Codificar UTF-8, guardar y cerrar
-    #    el archivo. Si escribir falla, informar de lo ocurrido, sin afirmar que
-    #    se aplicó una edición completa. No reparar ni reintentar otra sustitución.
-    # 5. En archivos .py, validar el texto nuevo con ast.parse sin ejecutarlo.
-    #    Si hay SyntaxError, recoger mensaje, línea y columna en el feedback;
-    #    mantener el cambio para que el modelo lo corrija en el siguiente paso.
-    # 6. Si el repositorio contiene un comando de lint ya utilizable y documentado,
-    #    ejecutarlo en el contenedor mediante el mismo helper, sin instalar nada,
-    #    sin autofix y dentro del tiempo restante. Devolver sus diagnósticos reales.
-    #    Si no hay checker, declarar que lint no se comprobó; ast.parse no es lint.
-    # 7. Devolver ruta editada, coincidencia sustituida y resultado de comprobaciones
-    #    o timeout, conservando salida parcial y usando truncamiento explícito del
-    #    feedback largo. No declarar resuelta la tarea por poder editar un archivo.
-    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-    raise NotImplementedError("The edit_file tool is not implemented yet.")
+    return _run_program(_EDIT_PROGRAM, _real_path(filepath), old_str, new_str)
 
 
-def list_files(directory: str, pattern: str) -> list[str]:
-    """List matching files as sorted absolute POSIX paths.
-
-    Pending implementation. An empty list means a completed search found no
-    matches. Invalid paths, traversal failures, and timeouts are tool errors.
-    """
+def list_files(directory: str, pattern: str = "*") -> str:
+    """List the files under a directory whose name matches the pattern."""
     logger.debug("Entrando en list_files")
-    # Pseudocódigo detallado:
-    # 1. Exigir directory y pattern strings, con patrón glob no vacío. Ejecutar
-    #    un fragmento Python dentro del contenedor mediante _run_in_container.
-    # 2. Resolver directory respecto al testbed, comprobar pertenencia a la raíz
-    #    real con relative_to y exigir directorio existente. Rechazar patrones
-    #    absolutos o con componentes '..' que pretendan salir del directorio.
-    # 3. Recorrer Path.rglob(pattern), quedarse con archivos y descartar destinos
-    #    cuyo resolve salga del testbed. No seguir enlaces de directorios que
-    #    introduzcan un recorrido fuera de la raíz ni inspeccionar el host.
-    # 4. Convertir las rutas obtenidas a strings POSIX absolutos y ordenarlas.
-    #    El fragmento interno puede enviar esa lista como JSON por stdout; parsear
-    #    únicamente una ejecución completa y correcta del helper.
-    # 5. Devolver la lista íntegra, o [] cuando no haya coincidencias reales.
-    #    No truncarla ni insertar un aviso como ruta. Un fallo de recorrido o
-    #    timeout es error de herramienta, nunca una lista vacía ficticia.
-    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-    raise NotImplementedError("The list_files tool is not implemented yet.")
+    return _run_program(
+        _LIST_PROGRAM, _root(), _real_path(directory), pattern, ",".join(SKIPPED_DIRECTORIES)
+    )
 
 
-def search_code(pattern: str, file_pattern: str) -> str:
-    """Search text and format matches as '/absolute/path:<line> <content>'.
-
-    Pending implementation. pattern is a regular expression and file_pattern
-    is a recursive glob. No matches produce empty text; failures stay visible.
-    """
+def search_code(pattern: str, file_pattern: str = "*.py") -> str:
+    """Return every line matching a regular expression, with its file and number."""
     logger.debug("Entrando en search_code")
-    # Pseudocódigo detallado:
-    # 1. Exigir patrones string. Ejecutar un fragmento Python con _run_in_container;
-    #    compilar pattern con re y comunicar regex inválida antes de recorrer.
-    #    Rechazar file_pattern absoluto o con '..'. Pasar valores como argumentos.
-    # 2. Dentro del contenedor enumerar archivos del testbed con Path.rglob según
-    #    file_pattern. Omitir .git y destinos que salgan de la raíz resuelta.
-    #    Ordenar rutas para obtener feedback reproducible.
-    # 3. Leer cada archivo de texto con with y UTF-8 con reemplazo. Si contiene
-    #    bytes NUL tratarlo como binario y no buscarlo como código. Por línea,
-    #    aplicar regex.search y numerar desde 1. No ocultar errores de E/S.
-    # 4. Emitir una línea por coincidencia: '/ruta/absoluta.py:<n> <contenido>'.
-    #    Mantener orden de ruta/línea y devolver "" sólo si acabó sin resultados.
-    # 5. Con timeout o fallo, comunicar el error y las coincidencias parciales
-    #    recibidas. Aplicar el criterio de truncamiento a feedback largo, con aviso
-    #    explícito para el agente. No inventar una fila que parezca coincidencia.
-    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-    raise NotImplementedError("The search_code tool is not implemented yet.")
+    return _run_program(
+        _SEARCH_PROGRAM, _root(), pattern, file_pattern,
+        ",".join(SKIPPED_DIRECTORIES), str(MAX_SEARCH_MATCHES),
+    )
 
 
 def search_function_or_class_definition_in_code(name: str) -> str:
-    """Find candidate Python definitions using textual matching.
-
-    Pending implementation. Results use the search_code format. Text inside
-    multiline strings may be mistaken for definitions by this initial approach.
-    """
+    """Find where a function or class with this exact name is defined."""
     logger.debug("Entrando en search_function_or_class_definition_in_code")
-    # Pseudocódigo detallado:
-    # 1. Exigir name string e identificador Python; rechazar keywords.
-    # 2. Construir una regex con re.escape(name), anclada al principio de línea,
-    #    que permita indentación, 'def', 'async def' o 'class' y el nombre exacto
-    #    seguido de su delimitador. No ejecutar el contenido para inspeccionarlo.
-    # 3. Llamar search_code con ese patrón y '*.py'. Reutilizar su recorrido,
-    #    manejo de E/S, numeración, orden y truncamiento; no crear otro buscador.
-    # 4. Devolver el resultado sin cambiar su formato. Describir esta limitación
-    #    textual en el docstring/manual, sin añadir falsas líneas de coincidencia.
-    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-    raise NotImplementedError("Definition search is not implemented yet.")
+    return search_code(rf"^\s*(def|class)\s+{re.escape(name)}\b")
 
 
-def find_references(name: str, filepath: str, line: int) -> str:
-    """Find textual usage candidates for a name anchored at a source location.
+def find_references(name: str, filepath: str = "", line: int = 0) -> str:
+    """Find where a name is used. This is a textual search, not a semantic one.
 
-    Pending implementation. Same-spelled symbols may be conflated and aliases
-    may be missed. This initial search does not resolve imports or lexical scope
-    and cannot guarantee the complete semantic usages required by the subject.
+    filepath and line say which definition the model is asking about; the search
+    itself cannot tell two same-named symbols apart.
     """
     logger.debug("Entrando en find_references")
-    # Pseudocódigo detallado:
-    # 1. Exigir name identificador Python no keyword y line entero >= 1. Validar
-    #    filepath resolviéndolo dentro del testbed, como en read_file.
-    # 2. Leer la línea indicada dentro del contenedor. Exigir que exista y que
-    #    contenga name como identificador completo; no aceptar una ubicación ajena
-    #    sólo porque el nombre aparezca en otro archivo.
-    # 3. Buscar name con límites de palabra en '*.py' mediante search_code.
-    #    filepath/line anclan la consulta, pero no resuelven ámbitos ni imports.
-    # 4. Si la ubicación indicada declara def/class con ese nombre, excluir sólo
-    #    esa definición exacta de los candidatos. No quitar todas las líneas que
-    #    contengan def: pueden ser referencias legítimas a otro símbolo.
-    # 5. Devolver las coincidencias restantes con el formato de search_code y
-    #    truncamiento explícito si hace falta. Si no hay candidatas, devolver "".
-    #    Propagar problemas de archivo, regex y timeout con su salida parcial.
-    # 6. Mantener esta limitación en la descripción MCP. El subject pide todos los
-    #    usos; esta aproximación necesita contrastarse con pruebas de herramientas
-    #    y no permite prometer compatibilidad con el examen desconocido.
-    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-    raise NotImplementedError("Reference search is not implemented yet.")
+    logger.info("Buscando referencias textuales de %s (definida en %s:%s)", name, filepath, line)
+    return search_code(rf"\b{re.escape(name)}\b")
 
 
-def run_tests() -> dict[str, Any]:
-    """Run the task's supplied evaluation script and return its real result.
+def run_command(command: str, workdir: str = TESTBED_DIRECTORY) -> str:
+    """Run one shell command inside the testbed and return what it printed."""
+    logger.debug("Entrando en run_command")
+    try:
+        completed = _run(
+            ["/bin/bash", "-lc", command], workdir=workdir,
+            timeout_seconds=_remaining_seconds(DEFAULT_COMMAND_TIMEOUT_SECONDS),
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("La orden supero su timeout")
+        return f"exit_code: timeout\nCommand timed out after {DEFAULT_COMMAND_TIMEOUT_SECONDS} seconds."
+    return _truncate(
+        f"exit_code: {completed.returncode}\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
 
-    Pending implementation. Return stdout, stderr, exit_code, and timed_out.
-    Tool feedback does not replace the benchmark evaluator's resolution check.
-    """
+
+def run_tests() -> str:
+    """Run the evaluation script supplied with the task, or pytest when absent."""
     logger.debug("Entrando en run_tests")
-    # Pseudocódigo detallado:
-    # 1. Leer AGENT_SMITH_EVAL_SCRIPT del entorno privado del servidor y exigir
-    #    contenido no vacío. SWEEnvironment lo copia íntegro de la tarea recibida.
-    #    No descargar, reconstruir ni sustituir el evaluador por tests inventados.
-    # 2. Entregar ['/bin/bash', '-c', script] como lista a _run_in_container,
-    #    con el testbed como workdir y el tiempo total restante de tarea. No hace
-    #    falta escribir el script en un temporal ni ejecutarlo jamás en el host.
-    # 3. Devolver los cuatro campos reales del helper. Si expiró, conservar la
-    #    salida parcial y timed_out=True; no reiniciar la evaluación por debajo.
-    # 4. Truncar sólo stdout/stderr largos según el criterio del módulo. Conservar
-    #    el código de salida sin transformarlo en otro valor ni añadir success
-    #    por ver 'passed', por arrancar el proceso o por exit_code == 0.
-    # 5. La moulinette interpreta FAIL_TO_PASS/PASS_TO_PASS y los marcadores del
-    #    script. Aquí se aporta feedback al modelo; no duplicar ese evaluador.
-    #    El helper cierra streams y cliente, conservando el contenedor de tarea.
-    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-    raise NotImplementedError("The run_tests tool is not implemented yet.")
+    script = os.environ.get("AGENT_SMITH_EVAL_SCRIPT", "")
+    if not script:
+        logger.warning("Sin eval_script en el entorno; se usa pytest")
+        script = "pytest -q"
+    try:
+        completed = _run(
+            ["/bin/bash", "-lc", script],
+            timeout_seconds=_remaining_seconds(TEST_TIMEOUT_SECONDS),
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("Los tests superaron su timeout")
+        return f"exit_code: timeout\nTests timed out after {TEST_TIMEOUT_SECONDS} seconds."
+    return _truncate(
+        f"exit_code: {completed.returncode}\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
 
 
 def get_patch() -> str:
-    """Return the complete, unmodified stdout of the repository's git diff.
-
-    Pending implementation. An empty diff is valid tool output. Errors and
-    timeouts must never be returned as a successful or partial patch.
-    """
+    """Return the complete diff of the work done so far, never truncated."""
     logger.debug("Entrando en get_patch")
-    # Pseudocódigo detallado:
-    # 1. Ejecutar ['git', '-c', 'core.fileMode=false', 'diff'] en el testbed usando
-    #    _run_in_container y el tiempo restante. Es el diff del árbol de trabajo:
-    #    no añadir archivos al índice ni cambiar la configuración Git para leerlo.
-    # 2. Si Git falla o timed_out=True, elevar error de herramienta. Conservar los
-    #    diagnósticos del fallo, pero no entregar un diff parcial como patch válido.
-    # 3. Con ejecución completa y exit_code == 0, devolver stdout exactamente.
-    #    No usar strip, fences, prefijos, avisos ni el límite de logs del módulo.
-    #    El helper tampoco trunca esta salida. Sin cambios, devolver "".
-    # 4. La respuesta completa puede llegar a final_answer local sin pasar por
-    #    truncamiento de observaciones; el adaptador decide el fallo por parche
-    #    vacío por separado. No insertar ese diagnóstico dentro de la solución.
-    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-    raise NotImplementedError("The get_patch tool is not implemented yet.")
-
-
-def run_command(command: str, workdir: str) -> dict[str, Any]:
-    """Run a shell command in the task container's requested working directory.
-
-    Pending implementation. Return stdout, stderr, exit_code, and timed_out.
-    Directory validation does not confine arbitrary shell commands; the separate
-    disposable container is the boundary protecting host files and credentials.
-    """
-    logger.debug("Entrando en run_command")
-    # Pseudocódigo detallado:
-    # 1. Exigir command y workdir strings, con command no vacío. No interpretar
-    #    la orden en el servidor ni rechazarla con un analizador shell propio.
-    # 2. Llamar _run_in_container(command, workdir,
-    #    DEFAULT_COMMAND_TIMEOUT_SECONDS). El helper resuelve workdir dentro
-    #    del testbed y reduce el timeout al tiempo total restante de la tarea.
-    # 3. Devolver los cuatro campos reales del resultado. Truncar sólo streams
-    #    largos con el aviso explícito descrito al inicio; conservar los códigos
-    #    no cero y las salidas parciales de timeout para el siguiente paso.
-    # 4. Propagar fallos de arranque/Docker. El helper cierra sus conexiones; esta
-    #    herramienta no crea otro contenedor ni ejecuta comandos en el host.
-    logger.warning("Funcionalidad pendiente; se mantiene NotImplementedError")
-    raise NotImplementedError("The run_command tool is not implemented yet.")
+    try:
+        completed = _run(["git", "-c", "core.fileMode=false", "diff"], timeout_seconds=60)
+    except subprocess.TimeoutExpired:
+        logger.error("git diff supero su timeout")
+        return "exit_code: timeout\ngit diff timed out."
+    if completed.returncode != 0:
+        logger.error("git diff fallo con codigo %s", completed.returncode)
+        return f"exit_code: {completed.returncode}\nstderr:\n{completed.stderr}"
+    if not completed.stdout.strip():
+        logger.info("git diff vacio: todavia no hay cambios")
+        return "No changes yet."
+    # El parche es la entrega: se conserva entero aunque sea largo.
+    return completed.stdout

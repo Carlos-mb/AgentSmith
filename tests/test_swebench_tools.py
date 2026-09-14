@@ -1,0 +1,153 @@
+"""Tests for the SWE-bench tools against a temporary host testbed."""
+
+import subprocess
+
+import pytest
+
+from agent_smith import swebench_tools
+
+
+UTILS = '''"""Helpers."""
+
+
+def calculate_sum(numbers):
+    return sum(numbers)
+
+
+def average(numbers):
+    return calculate_sum(numbers) / len(numbers)
+'''
+
+MODELS = '''class User:
+    def __init__(self, name):
+        self.name = name
+'''
+
+
+@pytest.fixture
+def testbed(tmp_path, monkeypatch):
+    """Build a small git checkout and point the tools at it."""
+    root = tmp_path / "testbed"
+    (root / "package").mkdir(parents=True)
+    (root / "utils.py").write_text(UTILS)
+    (root / "models.py").write_text(MODELS)
+    (root / "notes.txt").write_text("not python\n")
+    (root / "package" / "deep.py").write_text("from utils import calculate_sum\n")
+    for command in (
+        ["git", "init", "-q"],
+        ["git", "add", "-A"],
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+    ):
+        subprocess.run(command, cwd=root, check=True, capture_output=True)
+    monkeypatch.delenv("AGENT_SMITH_CONTAINER_ID", raising=False)
+    monkeypatch.setenv("TESTBED_PATH", str(root))
+    return root
+
+
+def test_read_file_numbers_the_requested_range(testbed):
+    result = swebench_tools.read_file("/testbed/utils.py", 4, 5)
+
+    assert result.splitlines() == ["4: def calculate_sum(numbers):", "5:     return sum(numbers)"]
+
+
+def test_read_file_stops_at_the_end_of_the_file(testbed):
+    result = swebench_tools.read_file("/testbed/models.py", 1, 500)
+
+    assert result.startswith("1: class User:")
+    assert len(result.splitlines()) == len(MODELS.splitlines())
+
+
+def test_list_files_walks_subdirectories_and_shows_testbed_paths(testbed):
+    result = swebench_tools.list_files("/testbed", "*.py")
+
+    assert set(result.split()) == {
+        "/testbed/models.py", "/testbed/utils.py", "/testbed/package/deep.py",
+    }
+    assert "notes.txt" not in result
+
+
+def test_search_code_reports_path_and_line_number(testbed):
+    result = swebench_tools.search_code("calculate_sum")
+
+    assert "/testbed/utils.py:4:" in result
+    assert "/testbed/package/deep.py:1:" in result
+
+
+def test_search_definition_finds_functions_and_classes(testbed):
+    function = swebench_tools.search_function_or_class_definition_in_code("calculate_sum")
+    klass = swebench_tools.search_function_or_class_definition_in_code("User")
+
+    assert "/testbed/utils.py" in function and "def calculate_sum" in function
+    # La llamada desde average no es una definicion y no debe aparecer.
+    assert "return calculate_sum" not in function
+    assert "/testbed/models.py" in klass and "class User" in klass
+
+
+def test_find_references_is_textual_and_includes_the_definition(testbed):
+    result = swebench_tools.find_references("calculate_sum", "/testbed/utils.py", 4)
+
+    assert "/testbed/utils.py:4:" in result
+    assert "/testbed/utils.py:9:" in result
+    assert "/testbed/package/deep.py:1:" in result
+
+
+def test_edit_file_applies_a_unique_match(testbed):
+    result = swebench_tools.edit_file("/testbed/utils.py", "return sum(numbers)", "return 0")
+
+    assert "Edit applied successfully." in result
+    assert "return 0" in (testbed / "utils.py").read_text()
+
+
+def test_edit_file_refuses_an_ambiguous_match(testbed):
+    result = swebench_tools.edit_file("/testbed/utils.py", "numbers", "values")
+
+    assert "expected exactly one match" in result
+    assert (testbed / "utils.py").read_text() == UTILS
+
+
+def test_edit_file_refuses_a_result_that_would_not_compile(testbed):
+    result = swebench_tools.edit_file("/testbed/utils.py", "def calculate_sum", "def calculate sum")
+
+    assert "would not compile" in result
+    assert (testbed / "utils.py").read_text() == UTILS
+
+
+def test_get_patch_reports_no_changes_then_shows_the_diff(testbed):
+    assert swebench_tools.get_patch() == "No changes yet."
+
+    swebench_tools.edit_file("/testbed/utils.py", "return sum(numbers)", "return 0")
+    patch = swebench_tools.get_patch()
+
+    assert patch.startswith("diff --git")
+    assert "-    return sum(numbers)" in patch
+    assert "+    return 0" in patch
+
+
+def test_run_command_returns_exit_code_and_output(testbed):
+    result = swebench_tools.run_command("echo marker_value", "/testbed")
+
+    assert "exit_code: 0" in result
+    assert "marker_value" in result
+
+
+def test_run_command_keeps_a_failure_visible(testbed):
+    result = swebench_tools.run_command("exit 3", "/testbed")
+
+    assert "exit_code: 3" in result
+
+
+def test_run_tests_uses_the_supplied_eval_script(testbed, monkeypatch):
+    monkeypatch.setenv("AGENT_SMITH_EVAL_SCRIPT", "echo running_eval_script")
+
+    result = swebench_tools.run_tests()
+
+    assert "running_eval_script" in result
+    assert "exit_code: 0" in result
+
+
+def test_paths_outside_the_testbed_are_refused(testbed):
+    with pytest.raises(ValueError):
+        swebench_tools.read_file("/etc/passwd", 1, 5)
+
+    with pytest.raises(ValueError):
+        swebench_tools.read_file("/testbed/../../etc/passwd", 1, 5)

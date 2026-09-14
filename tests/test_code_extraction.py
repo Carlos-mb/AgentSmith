@@ -1,4 +1,4 @@
-from agent_smith.code_extraction import extract_python_code
+from agent_smith.code_extraction import extract_python_code, extract_agent_code
 
 
 def test_extract_python_fenced_block():
@@ -128,3 +128,152 @@ def test_py_block_and_optional_end_code_marker():
         assert extract_python_code("```py\nprint('hello')\n```" + suffix) == (
             "print('hello')", ""
         )
+
+
+def test_tool_call_becomes_a_printed_python_call():
+    output = (
+        "<tool_call>read_file\n"
+        "<arg_key>filepath</arg_key>\n<arg_value>/testbed/x.py</arg_value>\n"
+        "<arg_key>start_line</arg_key>\n<arg_value>586</arg_value>\n"
+        "</tool_call>"
+    )
+
+    code, feedback = extract_agent_code(output)
+
+    assert code == "print(read_file(filepath='/testbed/x.py', start_line=586))"
+    assert feedback == ""
+
+
+def test_a_python_fence_wins_over_a_tool_call():
+    output = "```python\nprint(1)\n```\n<tool_call>read_file\n</tool_call>"
+
+    assert extract_agent_code(output)[0] == "print(1)"
+
+
+def test_several_tool_calls_keep_their_order():
+    output = (
+        "<tool_call>list_files\n<arg_key>directory</arg_key>\n<arg_value>/testbed</arg_value>\n</tool_call>\n"
+        "<tool_call>get_patch\n</tool_call>"
+    )
+
+    code, _ = extract_agent_code(output)
+
+    assert code.splitlines() == [
+        "print(list_files(directory='/testbed'))", "print(get_patch())",
+    ]
+
+
+def test_a_truncated_tool_call_executes_nothing():
+    code, feedback = extract_agent_code("<tool_call>read_file\n<arg_key>filepath</arg_key>")
+
+    assert code == ""
+    assert "No valid Python code" in feedback
+
+
+def test_an_unclosed_argument_name_is_refused():
+    output = "<tool_call>read_file\n<arg_key>filepath\n</tool_call>"
+
+    code, feedback = extract_agent_code(output)
+
+    assert code == ""
+    assert "Malformed tool call" in feedback
+
+
+def test_a_forgotten_arg_value_opening_tag_still_converts():
+    # Observado en una ejecucion real: el modelo abre el valor sin la etiqueta
+    # y solo pone el cierre. Antes esto costaba 23 iteraciones seguidas.
+    output = (
+        "<tool_call>run_command\n<arg_key>command</arg_key>\n\n"
+        "cd /testbed && echo \"hola\"</arg_value>\n</tool_call>"
+    )
+
+    code, feedback = extract_agent_code(output)
+
+    assert code == 'print(run_command(command=\'cd /testbed && echo "hola"\'))'
+    assert feedback == ""
+
+
+def test_a_tool_call_without_arguments_converts():
+    assert extract_agent_code("<tool_call>get_patch\n</tool_call>")[0] == "print(get_patch())"
+
+
+def test_a_forgotten_arg_value_closing_tag_still_converts():
+    # Observado en una ejecucion real: con valores largos el modelo se deja el
+    # cierre y antes perdiamos la iteracion entera.
+    output = (
+        "<tool_call>run_command\n<arg_key>command</arg_key>\n"
+        "<arg_value>cd /testbed && python -c \"print(1)\"\n</tool_call>"
+    )
+
+    code, feedback = extract_agent_code(output)
+
+    assert code == 'print(run_command(command=\'cd /testbed && python -c "print(1)"\'))'
+    assert feedback == ""
+
+
+def test_an_unusable_tool_name_is_refused():
+    code, feedback = extract_agent_code("<tool_call>rm -rf /\n</tool_call>")
+
+    assert code == ""
+    assert "Malformed tool call" in feedback
+
+
+def test_argument_values_keep_quotes_and_newlines_as_data():
+    output = (
+        "<tool_call>edit_file\n"
+        "<arg_key>old_str</arg_key>\n<arg_value>x = \"a\"\nreturn x</arg_value>\n"
+        "</tool_call>"
+    )
+
+    code, _ = extract_agent_code(output)
+
+    # El valor viaja como literal, nunca como codigo que se pueda ejecutar.
+    assert code == 'print(edit_file(old_str=\'x = "a"\\nreturn x\'))'
+
+
+def test_tool_use_with_json_arguments_becomes_a_python_call():
+    output = (
+        "I will search.\n\n<tool_use>\n<server_name>sympy</server_name>\n"
+        "<tool_name>search_code</tool_name>\n<arguments>\n"
+        '{"pattern": "cotm", "file_pattern": "*.py"}\n</arguments>\n</tool_use>'
+    )
+
+    code, feedback = extract_agent_code(output)
+
+    assert code == "print(search_code(pattern='cotm', file_pattern='*.py'))"
+    assert feedback == ""
+
+
+def test_tool_use_without_arguments_converts():
+    assert extract_agent_code(
+        "<tool_use>\n<tool_name>get_patch</tool_name>\n</tool_use>"
+    )[0] == "print(get_patch())"
+
+
+def test_tool_use_keeps_newlines_inside_string_arguments():
+    output = (
+        "<tool_use>\n<tool_name>edit_file</tool_name>\n<arguments>\n"
+        '{"old_str": "a\\nb", "new_str": "a\\nc"}\n</arguments>\n</tool_use>'
+    )
+
+    code, _ = extract_agent_code(output)
+
+    assert code == "print(edit_file(old_str='a\\nb', new_str='a\\nc'))"
+
+
+def test_tool_use_with_broken_json_is_refused():
+    output = (
+        "<tool_use>\n<tool_name>search_code</tool_name>\n"
+        '<arguments>\n{"pattern": }\n</arguments>\n</tool_use>'
+    )
+
+    code, feedback = extract_agent_code(output)
+
+    assert code == ""
+    assert "Malformed tool call" in feedback
+
+
+def test_a_python_fence_still_wins_over_tool_use():
+    output = "```python\nprint(1)\n```\n<tool_use>\n<tool_name>get_patch</tool_name>\n</tool_use>"
+
+    assert extract_agent_code(output)[0] == "print(1)"

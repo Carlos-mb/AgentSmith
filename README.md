@@ -17,9 +17,10 @@ through OpenRouter. The wider evaluation remains pending.
 ## Current status
 
 Implemented: public JSON models and CLI arguments, restricted persistent Python
-worker, process supervision, Python extraction, observations, MCP stdio discovery
-and wrappers, Docker MBPP tests, configurable HTTP provider client, shared agent
-loop, and MBPP adapter/CLI.
+worker, process supervision, Python extraction, observations, MCP discovery and
+wrappers through stdio and streamable HTTP, the interactive sandbox REPL, Docker
+MBPP tests, configurable HTTP provider client, shared agent loop, and MBPP
+adapter/CLI.
 
 The controlled integration test runs the actual CLI, worker, MCP server and Docker
 with scripted HTTP responses and known candidate code. It observes a failed test,
@@ -44,10 +45,20 @@ defaults to 0.1 as in the reference, and missing-code feedback asks for the whol
 block again. Each step now records the model reported by the API, which matters
 when the explicitly selected free router changes models between requests.
 
-MCP HTTP, the interactive sandbox/REPL, non-Python conversions, SWE-bench tools
-and adapter, and the manual benchmark report are still pending. Their necessary
-stubs retain `NotImplementedError`. Two validated MBPP tasks do not establish
-success on the full benchmark or the security examination.
+The manual benchmark report is still pending. The SWE-bench tools and adapter are
+implemented: the tools pass the sandbox exam's own test, and a controlled cycle
+test drives the real CLI, container, MCP server and worker through exploration,
+an edit and `final_answer(get_patch())`. No SWE-bench task has been validated by
+moulinette yet.
+Their necessary stubs retain `NotImplementedError`. Extraction takes a closed
+```python block first and otherwise converts `<tool_call>` blocks into the
+equivalent Python calls. That conversion is not optional in practice: in a live
+SWE-bench run the selected model switched to that dialect after its first
+observation, and every later iteration produced nothing executable without it.
+The subject's XML `<invoke>` and ReAct formats are still not handled; no model
+used here has produced them.
+Two validated MBPP tasks do not establish success on the full benchmark or the
+security examination.
 
 ## Why Ling 3.0 Flash VL and the original prompt
 
@@ -120,7 +131,26 @@ A fatal worker failure may end the task with its actual partial result. A REPL
 restart must tell the user that variables have been lost.
 
 The common loop accepts either benchmark; only the MBPP adapter is implemented.
-The first live MBPP validation is complete; MCP/REPL and SWE-bench follow.
+The first live MBPP validation is complete; SWE-bench follows.
+
+### Why asyncio
+
+`asyncio` is not a subject requirement; it is a consequence of the tool used to
+speak MCP. The official `mcp` Python SDK (`ClientSession`, `stdio_client`,
+`streamable_http_client`) exposes an async-only API: every connection is an
+async context manager and every call (`initialize`, `list_tools`, `call_tool`)
+is a coroutine. Reimplementing the MCP JSON-RPC protocol by hand would avoid
+`asyncio`, but at the cost of rebuilding schema validation, pagination and the
+streamable HTTP transport that the SDK already provides.
+
+`asyncio` is confined to the coordinator task that owns the MCP session: setup,
+every request, and cleanup happen in that single task, with no private SDK
+thread and no event loop shared across components. The persistent worker that
+executes generated Python and the sandbox itself stay fully synchronous; they
+never receive an SDK session, an event loop or API keys. This keeps the async
+surface to the smallest piece that actually needs it, instead of wrapping the
+SDK in a synchronous facade with a dedicated thread, which would add
+concurrency for no behavioural gain.
 
 ## Agent loop and limits
 
@@ -137,6 +167,16 @@ The subject and the available moulinette models specify these task limits:
 | MBPP | 10 | 6,000 | 1,500 | 120 seconds |
 | SWE-bench | 30 | 300,000 | 10,000 | 900 seconds |
 
+Each request sends the system prompt, the task and only the last three exchanges.
+The whole list is resent every iteration, so keeping all of it costs quadratically:
+one SWE-bench run spent 296,410 of its 300,000 input tokens that way, with a single
+search observation accounting for 72,264 of them. With the window, thirty iterations
+cost about 141,000 even if every observation hits its size cap. The window never
+discards what the result file records: `steps` keeps every response and observation
+in full. This follows the reference implementation, which trims to the same three
+exchanges for both benchmarks. The two validated MBPP runs used four and two
+iterations, below the window, so they are unaffected.
+
 Tokens accumulate across the task, including reasoning tokens where applicable.
 The loop must accumulate each request's metrics once. Total requests include
 retries. Each solution must retain the full system prompt, raw model responses,
@@ -146,8 +186,12 @@ The client selects one URL/model configuration, reads its named environment keys
 and rotates only those keys on HTTP 429. Retries are bounded by `max_retries`,
 time and remaining tokens. A response without complete usage ends the task with
 known subtotals and an explicit error; its unknown consumption is never reported
-as a measured zero. A 429 without usage advances the key index but cannot trigger
-another generation with unknown spend. HTTP retry acceptance during the exam
+as a measured zero. A 429 is the exception: a rate-limited request is rejected
+before the model generates anything, so its missing usage is a known zero. The
+client advances the key index and retries with the next key, which is what makes
+a second key useful at all; it never invents tokens for the rejected attempt.
+Note that a provider's free-tier quota is usually per account, so extra keys on
+the same account do not add quota. HTTP retry acceptance during the exam
 remains uncertain; set `max_retries` to 0 for a run without HTTP retries.
 
 Before sending, the client estimates input size as UTF-8 bytes divided by four
@@ -162,29 +206,32 @@ reply at 600 tokens, also bounded by the task's remaining output allowance.
 The free router leaves reasoning at the selected model's default: some endpoints
 reject disabling it. Reasoning tokens still consume the same task allowance.
 
-`configs/models_template.json` contains four explicitly selectable configurations.
-The OpenRouter catalog and access were checked on 2026-09-12:
+`configs/models_template.json` contains seven explicitly selectable configurations,
+chosen on 2026-09-14 by cross-checking which models other passing projects reported
+against what the free catalogue still offers. Several models those reports relied on
+(`openai/gpt-oss-120b:free`, `deepseek-v4-flash:free`, `glm-4.5-air:free`,
+`qwen3-next-80b:free`) have since disappeared from OpenRouter's free tier.
 
-- OpenRouter: `inclusionai/ling-3.0-flash-vl:free`, a larger candidate for the model
-  comparison. It advertises zero prompt/completion prices and `stop`/`max_tokens`
-  support and passed task 396 with the retained prompt.
-  [Model](https://openrouter.ai/inclusionai/ling-3.0-flash-vl:free).
-- OpenRouter: `openrouter/free`, which chooses a free model per request. Both
-  recorded trials failed to finish the task. The API's `model` field is retained
-  in step metrics; when it is absent, the requested ID is kept.
-  [Free router](https://openrouter.ai/docs/guides/routing/routers/free-router).
+Through Google's OpenAI-compatible endpoint, which has its own daily quota:
 
-- OpenRouter: `cohere/north-mini-code:free`. The public catalog lists zero input/
-  output prices and `stop`/`max_tokens` support. Parameters are required in routing.
-  Live access was confirmed after the account owner adjusted the workspace policy.
-  The first attempt after that change failed benchmark correctness.
-  [Catalog](https://openrouter.ai/api/v1/models),
-  [model](https://openrouter.ai/cohere/north-mini-code:free).
-- Gemini, checked on 2026-09-11: `gemini-2.5-flash-lite`, through Google's compatible endpoint with
-  `reasoning_effort: "none"`. The pricing page lists a free tier. Live requests
-  have returned code and measured usage; HTTP 503 and HTTP 429 failures also occurred.
-  [Pricing](https://ai.google.dev/gemini-api/docs/pricing),
-  [compatibility](https://ai.google.dev/gemini-api/docs/openai).
+- `gemini-3.5-flash-lite` — the primary candidate. Another project reported it passing
+  SWE-bench repeatedly. Here it explores, reads and edits real files, but has not yet
+  converged on a submitted patch.
+- `gemini-3.1-flash-lite` and `gemini-3.8-flash` — alternatives for the model comparison.
+
+Through OpenRouter, all on the free tier:
+
+- `dots-studio/dots-3-note-preview:free` and `nvidia/nemotron-3.5-lightning:free` —
+  both reported passing SWE-bench elsewhere. Untested here: the daily free quota was
+  exhausted before they could run.
+- `google/gemma-4-31b-it:free` — the same model family another project passed 3/3 with.
+- `inclusionai/ling-3.0-flash-vl:free` — kept because it is the model that validated
+  MBPP tasks 396 and 163 through moulinette.
+
+The three OpenRouter entries above declare no stop sequence because those models do not
+support one. The client therefore only asks OpenRouter to honour parameters when a stop
+sequence is actually configured; requesting it unconditionally would exclude them from
+routing.
 
 Availability and quotas can change. The project requires free access without
 purchased credits or billing-enabled accounts. Extra keys do not imply extra
@@ -226,7 +273,7 @@ are outside the chosen first version.
 
 ## MCP and tools
 
-The MCP client must support stdio and streamable HTTP, dynamic discovery of tools,
+The MCP client supports stdio and streamable HTTP, dynamic discovery of tools,
 resources and prompts, and a manual generated from server metadata. The SDK and
 server validate MCP operations. The worker sees simple callable wrappers that
 exchange JSON with the supervisor; it does not own the MCP session.
@@ -240,8 +287,7 @@ removes containers with that exact label to cover cancellation or server death.
 Five seconds of the total task limit are reserved for cleanup. An unavailable
 Docker daemon can still prevent confirmed deletion; cleanup errors mark failure.
 
-The planned SWE-bench server owns one container per task and one command helper.
-These nine required tools are still pending:
+The SWE-bench server exposes one command helper and the nine required tools:
 
 - `read_file(filepath, start_line, end_line)`
 - `edit_file(filepath, old_str, new_str)`
@@ -253,9 +299,27 @@ These nine required tools are still pending:
 - `get_patch()`
 - `run_command(command, workdir)`
 
-SWE-bench commands run inside the task container. `run_tests` executes the supplied
-`eval_script`; `get_patch` returns the complete diff. Initial reference search is
-textual and cannot reliably distinguish all usages of symbols with the same name.
+All nine run where the checkout lives. With `AGENT_SMITH_CONTAINER_ID` the helper
+uses `docker exec` inside that task container; otherwise it works on the host
+directory named by `TESTBED_PATH`, which is how the sandbox exam drives the tools.
+Paths are always exchanged as `/testbed/...` and mapped onto the real root, so the
+model sees the same layout either way and cannot reach outside it. `run_tests`
+executes the supplied `eval_script`; `get_patch` returns the complete diff and is
+never truncated. Reference search is textual and cannot reliably distinguish all
+usages of symbols with the same name.
+
+`SWEEnvironment` owns exactly one container per task: it makes the task image
+available, runs it with `--network none` holding `/testbed`, and exports only the
+container name, the eval script and the deadline to the MCP server.
+
+The container's lifetime is tied to the agent's own standard input. It runs as
+`docker run -i --rm ... cat`, holding the write end of that pipe. Closing the pipe
+is what stops it, so a normal exit, a cancellation and a `kill -9` all remove the
+container: the kernel closes the agent's descriptors, `cat` reaches end of input,
+the container stops and `--rm` deletes it. A `finally` alone cannot survive SIGKILL,
+which is why the container is not kept alive with `tail -f /dev/null`. Verified by
+killing the real CLI mid-task and checking `docker ps`. `run_swebench_agent` reuses the same `run_agent_loop` as MBPP; only the
+prompts, limits and resource lifecycle differ.
 
 ## Instructions
 
@@ -270,11 +334,25 @@ uv run --offline --no-sync --python 3.10 python -m agent_swebench --help
 
 The required task flags are `--task-file`, `--output`, `--model-name` and
 `--provider-url`. Sandbox arguments retain an optional configuration path and
-mutually exclusive `--mcp-stdio` and `--mcp-server` options. Parsing these options
-launches MBPP execution, but does not implement the sandbox REPL. The sandbox parser can be tested
-independently, but `sandbox_cli.main` remains a stub, so `uv run sandbox --help`
-does not work yet. The planned sandbox CLI owner will open and close MCP itself,
-and lend that session to the supervisor for the REPL.
+mutually exclusive `--mcp-stdio` and `--mcp-server` options. The sandbox opens
+and closes its worker and optional MCP client in one asynchronous task:
+
+```bash
+uv run --offline --no-sync --python 3.10 sandbox
+uv run --offline --no-sync --python 3.10 sandbox configs/sandbox_template.json
+uv run --offline --no-sync --python 3.10 sandbox \
+  --mcp-stdio "python mcp_tools_mbpp.py" configs/sandbox_template.json
+uv run --offline --no-sync --python 3.10 sandbox \
+  --mcp-server http://127.0.0.1:8000/mcp
+```
+
+Type Python code at the prompt. A block ends with a blank line, exactly as in the
+standard Python REPL, so an `else`, `except` or `finally` clause stays in the same
+entry. An exact `exit` at the main prompt or EOF closes the sandbox; on EOF a block
+still being typed is executed first, which is what piping a file into the sandbox
+needs. Entries share the
+worker namespace. A fatal worker error restarts it and reports that variables
+were lost. `final_answer` is printed and then the REPL continues.
 
 ### First live MBPP run
 
@@ -358,6 +436,7 @@ From the student directory:
 
 ```bash
 uv run --offline --no-sync --python 3.10 python -m pytest tests/test_sandbox_session.py tests/test_providers.py tests/test_agent_loop.py
+uv run --offline --no-sync --python 3.10 python -m pytest tests/test_sandbox_cli.py tests/test_mcp_client.py
 uv run --offline --no-sync --python 3.10 python -m pytest tests/test_mbpp_cycle.py tests/test_mcp_mbpp.py tests/test_mbpp_tools.py
 git diff --check
 ```
@@ -394,6 +473,14 @@ full system prompt. Every new live result was validated by moulinette separately
 the public configurations were parsed and their router payload checked offline.
 After restoring the original prompt, all 4 tests in `test_mbpp_cycle.py` passed
 in 5.39 seconds with Docker, checking the final code's controlled correction cycle.
+
+After adding the REPL and streamable HTTP transport, the full suite passed
+**217 tests in 29.68 seconds** with the Python 3.10 command above. The HTTP test
+starts a local FastMCP server, discovers an unknown tool, resource, resource
+template and prompt, then calls them through the real worker wrappers. The REPL
+tests cover multi-line input, persistence, syntax errors, EOF and recovery after
+a lost worker. No live provider request or moulinette validation was run for this
+change.
 
 ## Benchmark results and analysis
 

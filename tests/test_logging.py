@@ -52,7 +52,7 @@ def test_invalid_level_reports_error_without_echoing_its_value():
                             cwd=ROOT, env=environment("mistyped-private-value"),
                             text=True, capture_output=True, timeout=10)
     assert result.returncode == 0 and result.stdout == ""
-    assert "no válido; usando ERROR" in result.stderr
+    assert "not valid; using ERROR" in result.stderr
     assert "mistyped-private-value" not in result.stderr
 
 

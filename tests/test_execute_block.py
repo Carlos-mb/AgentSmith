@@ -203,3 +203,42 @@ def test_protocol_failure_propagates_without_sending_done(namespace):
     stream.write.assert_called_once()
     sent_message = json.loads(stream.write.call_args.args[0])
     assert sent_message["type"] == "output"
+
+
+def _printed(code, namespace):
+    """Return only what the block wrote as output messages."""
+    stream = StringIO()
+    execute_block(code, namespace, stream)
+    return "".join(
+        json.loads(line)["text"]
+        for line in stream.getvalue().splitlines()
+        if json.loads(line)["type"] == "output"
+    )
+
+
+def test_a_trailing_expression_is_echoed_like_in_the_repl(namespace):
+    # Los modelos llaman a las herramientas sin print; sin este eco la
+    # observacion llegaba vacia y repetian la misma llamada en bucle.
+    assert _printed("1 + 1", namespace) == "2\n"
+
+
+def test_a_trailing_expression_runs_after_the_rest_of_the_block(namespace):
+    assert _printed("a = 3\nb = 4\na * b", namespace) == "12\n"
+
+
+def test_an_assignment_alone_echoes_nothing(namespace):
+    assert _printed("value = 10", namespace) == ""
+    assert namespace["value"] == 10
+
+
+def test_a_trailing_none_echoes_nothing(namespace):
+    assert _printed("def nothing():\n    pass\nnothing()", namespace) == ""
+
+
+def test_an_explicit_print_is_not_duplicated(namespace):
+    assert _printed("print('once')", namespace) == "once\n"
+
+
+def test_a_multiline_string_result_is_echoed_readably(namespace):
+    # Las herramientas devuelven texto con saltos; el modelo debe leerlo tal cual.
+    assert _printed("'primera\\nsegunda'", namespace) == "primera\nsegunda\n"

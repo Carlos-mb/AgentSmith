@@ -1,10 +1,17 @@
-"""Tests for sandbox CLI argument parsing."""
+"""Tests for sandbox CLI parsing and the persistent interactive loop."""
 
+import asyncio
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
-from agent_smith.sandbox_cli import _build_mcp_client, parse_arguments
+import agent_smith.sandbox_cli as sandbox_cli
+from agent_smith.mcp_client import MCPManual
+from agent_smith.models import SandboxConfig
+from agent_smith.sandbox import SandboxSession
+from agent_smith.sandbox_cli import _build_mcp_client, parse_arguments, run_repl
 
 def test_parse_arguments_with_no_options():
     args = parse_arguments([])
@@ -103,4 +110,246 @@ def test_build_mcp_client_uses_shlex_for_stdio_command():
         "server.py",
         "--message",
         "hello world",
+    ]
+
+
+def test_repl_executes_complete_blocks_and_keeps_its_namespace(monkeypatch, capsys):
+    entries = iter([
+        "value = 40",
+        "def add(left, right):",
+        "    return left + right",
+        "",
+        "print(add(value, 2))",
+        "final_answer('done')",
+        "print(value)",
+        "exit",
+    ])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(entries))
+
+    async def scenario():
+        session = SandboxSession(SandboxConfig(allowed_directories=[]))
+        try:
+            await session.start()
+            assert await run_repl(session) == 0
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())
+    output = capsys.readouterr().out
+    assert "42\n" in output
+    assert "Final answer: done\n" in output
+    assert output.endswith("40\n")
+
+
+def test_repl_reports_syntax_errors_and_returns_to_the_prompt(monkeypatch, capsys):
+    entries = iter(["if :", "print('still running')", "exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(entries))
+
+    async def scenario():
+        session = SandboxSession(SandboxConfig(allowed_directories=[]))
+        try:
+            await session.start()
+            assert await run_repl(session) == 0
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())
+    output = capsys.readouterr().out
+    assert "SyntaxError:" in output
+    assert output.endswith("still running\n")
+
+
+def test_repl_exits_on_eof_without_executing_code(monkeypatch):
+    def end_of_input(prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", end_of_input)
+
+    assert asyncio.run(run_repl(None)) == 0
+
+
+def test_repl_runs_the_last_block_when_input_ends_without_a_blank_line(monkeypatch, capsys):
+    # Los tests del examen se envian con `cat fichero | sandbox`: el ultimo bloque
+    # llega sin linea en blanco y antes se quedaba sin ejecutar.
+    entries = iter(["if True:", "    print('ultimo bloque')"])
+
+    def next_entry(prompt):
+        try:
+            return next(entries)
+        except StopIteration:
+            raise EOFError
+
+    monkeypatch.setattr("builtins.input", next_entry)
+
+    async def scenario():
+        session = SandboxSession(SandboxConfig(allowed_directories=[]))
+        try:
+            await session.start()
+            assert await run_repl(session) == 0
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())
+    assert "ultimo bloque\n" in capsys.readouterr().out
+
+
+def test_repl_keeps_a_block_open_until_its_else_branch(monkeypatch, capsys):
+    # Con symbol="exec" el bloque se cerraba tras el `if` y el `else` llegaba suelto.
+    entries = iter([
+        "for item in [1]:", "    if item:", "        print('rama if')",
+        "    else:", "        print('rama else')", "", "exit",
+    ])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(entries))
+
+    async def scenario():
+        session = SandboxSession(SandboxConfig(allowed_directories=[]))
+        try:
+            await session.start()
+            assert await run_repl(session) == 0
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())
+    output = capsys.readouterr().out
+    assert "rama if\n" in output
+    assert "IndentationError" not in output
+
+
+def test_repl_restarts_only_after_a_lost_worker(monkeypatch, capsys):
+    entries = iter(["while True: pass", "", "value = 3", "print(value)", "exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(entries))
+
+    async def scenario():
+        session = SandboxSession(SandboxConfig(
+            allowed_directories=[], max_execution_time_seconds=1,
+        ))
+        try:
+            await session.start()
+            assert await run_repl(session) == 0
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())
+    output = capsys.readouterr().out
+    assert "Execution timed out; worker state was lost." in output
+    assert "Worker restarted; variables were lost." in output
+    assert output.endswith("3\n")
+
+
+async def _script(text):
+    session = SandboxSession(SandboxConfig(allowed_directories=[]))
+    try:
+        await session.start()
+        assert await sandbox_cli.run_script(session, text) == 0
+    finally:
+        await session.close()
+
+
+def test_script_keeps_blank_lines_inside_a_block(capsys):
+    # Un fichero por tuberia se ejecuta por sentencias: una linea en blanco
+    # dentro del bloque no lo cierra, al contrario que en el REPL interactivo.
+    asyncio.run(_script(
+        "if True:\n"
+        "    print('antes')\n"
+        "\n"
+        "    print('despues')\n"
+        "else:\n"
+        "    print('nunca')\n"
+    ))
+
+    output = capsys.readouterr().out
+    assert "antes\n" in output and "despues\n" in output
+    assert "nunca" not in output
+    assert "IndentationError" not in output
+
+
+def test_script_continues_after_a_final_answer(capsys):
+    asyncio.run(_script(
+        "valor = 7\n"
+        "try:\n"
+        "    final_answer('entregado')\n"
+        "except Exception as error:\n"
+        "    print('capturado:', error)\n"
+        "print('sigo vivo', valor)\n"
+    ))
+
+    output = capsys.readouterr().out
+    assert "capturado: entregado\n" in output
+    assert "sigo vivo 7\n" in output
+
+
+def test_script_reports_a_syntax_error_without_executing_anything(capsys):
+    async def scenario():
+        session = SandboxSession(SandboxConfig(allowed_directories=[]))
+        try:
+            await session.start()
+            assert await sandbox_cli.run_script(session, "print('hola')\nif :\n") == 1
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())
+    output = capsys.readouterr().out
+    assert "SyntaxError:" in output
+    assert "hola" not in output
+
+
+def test_sandbox_entrypoint_opens_repl_and_closes_after_exit():
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from agent_smith.sandbox_cli import main; raise SystemExit(main())",
+        ],
+        cwd=root,
+        input="value = 4\nprint(value)\nexit\n",
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 0
+    assert "4\n" in result.stdout
+    assert result.stderr == ""
+
+
+def test_sandbox_owner_closes_resources_after_keyboard_interrupt(monkeypatch):
+    events = []
+
+    class Client:
+        async def start(self):
+            events.append("mcp start")
+            return "sdk session", MCPManual("", [], [], [], [])
+
+        async def close(self):
+            events.append("mcp close")
+
+    class Session:
+        def __init__(self, config, mcp_session, manual):
+            events.append("sandbox create")
+
+        async def start(self):
+            events.append("sandbox start")
+
+        async def close(self):
+            events.append("sandbox close")
+
+    async def interrupt(session):
+        events.append("repl")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(sandbox_cli, "load_sandbox_config", lambda path: SandboxConfig())
+    monkeypatch.setattr(sandbox_cli, "_build_mcp_client", lambda args: Client())
+    monkeypatch.setattr(sandbox_cli, "SandboxSession", Session)
+    monkeypatch.setattr(sandbox_cli, "run_repl", interrupt)
+    monkeypatch.setattr(sandbox_cli, "run_script", interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        asyncio.run(sandbox_cli._run_sandbox(parse_arguments([
+            "--mcp-server", "http://127.0.0.1:8000/mcp",
+        ])))
+
+    assert events == [
+        "mcp start", "sandbox create", "sandbox start", "repl",
+        "sandbox close", "mcp close",
     ]

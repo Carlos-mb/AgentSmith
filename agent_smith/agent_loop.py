@@ -14,6 +14,43 @@ from agent_smith.providers import ProviderClient
 from agent_smith.sandbox import SandboxExecution, SandboxSession
 
 
+MINIMUM_HISTORY_MESSAGES = 6
+
+
+def _message_tokens(message: dict[str, str]) -> int:
+    """Approximate one message the same way the provider estimates a request."""
+    return (len(message["content"].encode("utf-8")) + 3) // 4 + 8
+
+
+def trim_history(messages: list[dict[str, str]], budget_tokens: int) -> list[dict[str, str]]:
+    """Keep the system prompt, the task, and as many recent exchanges as fit.
+
+    La lista entera se reenvía en cada petición, así que conservarla completa
+    crece de forma cuadrática: una ejecución gastó 296.410 de sus 300.000 tokens
+    de entrada. Una ventana fija tampoco sirve: con tres parejas el modelo dejó
+    de recordar que ya había editado un archivo y releyó lo mismo 22 veces.
+    Por eso el tamaño lo decide el presupuesto que queda repartido entre las
+    iteraciones que quedan. Siempre se mandan MINIMUM_HISTORY_MESSAGES aunque no
+    quepan: sin los últimos intercambios el modelo no puede continuar.
+    """
+    logger.debug("Entrando en trim_history")
+    head, rest = messages[:2], messages[2:]
+    used = sum(_message_tokens(message) for message in head)
+    kept: list[dict[str, str]] = []
+    for message in reversed(rest):
+        used += _message_tokens(message)
+        if used > budget_tokens and len(kept) >= MINIMUM_HISTORY_MESSAGES:
+            break
+        kept.append(message)
+    kept.reverse()
+    if len(kept) < len(rest):
+        logger.info(
+            "Recortando historial a %s mensajes de %s; presupuesto=%s tokens",
+            len(head) + len(kept), len(messages), budget_tokens,
+        )
+    return head + kept
+
+
 def build_observation(
     execution: SandboxExecution | None,
     extraction_feedback: str,
@@ -42,6 +79,11 @@ def build_observation(
 
     if execution.final_answer is not None:
         parts.append("Final answer:\n" + execution.final_answer)
+
+    if not parts:
+        # Un bloque que no imprime nada dejaba la observación vacía y el modelo
+        # repetía la misma llamada sin entender por qué no veía resultado.
+        parts.append("The block ran without errors and printed nothing.")
 
     return "\n".join(parts)
 
@@ -88,8 +130,11 @@ async def run_agent_loop(
             if input_tokens >= limits.max_input_tokens or output_tokens >= limits.max_output_tokens:
                 error = "Task token budget exhausted."
                 break
+            # Reparto lo que queda de entrada entre las iteraciones que faltan.
+            share = (limits.max_input_tokens - input_tokens) // (limits.max_iterations - number + 1)
             completion = await provider.complete(
-                messages, max_input_tokens=limits.max_input_tokens - input_tokens,
+                trim_history(messages, share),
+                max_input_tokens=limits.max_input_tokens - input_tokens,
                 max_output_tokens=limits.max_output_tokens - output_tokens,
                 deadline=deadline,
             )
@@ -123,9 +168,7 @@ async def run_agent_loop(
                 logger.error("Iteración %s detenida antes de ejecutar código: %s", number, error)
                 step.sandbox_output = error
                 break
-            code, feedback = extract_agent_code(
-                completion.text, response_format=provider.config.response_format,
-            )
+            code, feedback = extract_agent_code(completion.text)
             execution = None
             if code:
                 logger.info("Iteración %s: ejecutando el bloque Python extraído", number)

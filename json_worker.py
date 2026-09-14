@@ -7,6 +7,7 @@ from agent_smith.logging_config import configure_logging, get_logger
 logger = get_logger('json_worker')
 from typing import Any, Callable, TextIO
 from agent_smith.models import SandboxConfig
+import ast
 import json
 import keyword
 import sys
@@ -205,7 +206,20 @@ def execute_block(
 
     try:
         with redirect_stdout(output), redirect_stderr(output):
-            exec(compile(code, "<sandbox>", "exec"), namespace, namespace)
+            parsed = ast.parse(code)
+            # Como en el REPL de Python: si el bloque termina en una expresión,
+            # mostrar su valor. Los modelos llaman a las herramientas sin print,
+            # y sin esto la observación llegaba vacía y se quedaban en bucle.
+            trailing = None
+            if parsed.body and isinstance(parsed.body[-1], ast.Expr):
+                trailing = parsed.body.pop().value
+            exec(compile(parsed, "<sandbox>", "exec"), namespace, namespace)
+            if trailing is not None:
+                value = eval(
+                    compile(ast.Expression(trailing), "<sandbox>", "eval"), namespace, namespace,
+                )
+                if value is not None:
+                    print(value)
 
     except FinalAnswerSignal as exc:
         answer = exc.args[0]

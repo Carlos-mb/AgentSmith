@@ -27,3 +27,6 @@ htmlcov/
 
 # Local benchmark scratch data
 benchmark_results/tmp/
+
+# Local scratch
+tmp/

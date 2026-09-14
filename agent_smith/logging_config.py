@@ -67,7 +67,7 @@ def configure_logging() -> None:
     _configured = True
     if requested and requested not in _LEVELS:
         logging.getLogger("agent_smith.logging_config").error(
-            "%s no válido; usando ERROR. Valores: DEBUG, INFO, WARNING, ERROR, CRITICAL.",
+            "%s not valid; using ERROR. Values: DEBUG, INFO, WARNING, ERROR, CRITICAL.",
             LOG_LEVEL_ENV,
         )
 

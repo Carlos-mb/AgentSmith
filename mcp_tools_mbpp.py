@@ -17,16 +17,16 @@ mcp = FastMCP("Agent Smith MBPP tools")
 @mcp.tool()
 def run_tests(
     code: str,
-    test_imports: list[str],
     test_list: list[str],
+    test_imports: list[str] = [],
     timeout_seconds: int = 10,
 ) -> dict[str, Any]:
     """Run a candidate Python solution against the public MBPP tests.
 
     Args:
         code: Complete Python solution proposed for the task.
-        test_imports: Import statements supplied with the MBPP task.
         test_list: Public assertion statements supplied with the MBPP task.
+        test_imports: Import statements supplied with the MBPP task, if any.
         timeout_seconds: Maximum time allowed for this test execution.
 
     Returns:
