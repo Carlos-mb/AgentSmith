@@ -81,12 +81,11 @@ class SWEEnvironment:
         except RuntimeError:
             logger.info("Descargando la imagen de la tarea; puede tardar")
             self._docker("pull", image)
-        # El contenedor se queda vivo leyendo NUESTRA entrada estándar, no con
-        # un `tail -f` suelto. Si el agente muere de cualquier forma, incluido
-        # un kill -9 que ningún finally puede interceptar, el kernel cierra
-        # esta tubería, `cat` ve el fin de entrada, el contenedor para y --rm
-        # lo borra. Sin red y sin privilegios: dentro sólo corren los tests
-        # del repo.
+        # The container stays alive by reading OUR standard input, not with a
+        # stray `tail -f`. If the agent dies in any way, including a kill -9
+        # that no finally can intercept, the kernel closes this pipe, `cat`
+        # sees end of input, the container stops and --rm removes it. No
+        # network and no privileges: only the repository tests run inside.
         self.holder = subprocess.Popen(
             ["docker", "run", "-i", "--rm", "--name", self.container_id,
              "--network", "none", image, "cat"],
@@ -137,8 +136,8 @@ class SWEEnvironment:
             return
         self.started = False
         logger.info("Eliminando el contenedor de la tarea")
-        # Cerrar la tubería basta para que el contenedor pare y se borre solo;
-        # el rm es el cinturón por si el demonio no llegó a recogerlo.
+        # Closing the pipe is enough for the container to stop and remove
+        # itself; the rm is a safety belt in case the daemon did not reap it.
         if self.holder is not None:
             if self.holder.stdin is not None:
                 self.holder.stdin.close()
@@ -164,8 +163,8 @@ class SWEEnvironment:
 def build_swebench_system_prompt(mcp_manual: str) -> str:
     """Build the English SWE-bench instructions around the MCP manual."""
     logger.debug("Entrando en build_swebench_system_prompt")
-    # El prompt va tal cual: partir sus líneas cambiaría el texto que recibe
-    # el modelo. Por eso el noqa del final cubre sus líneas largas.
+    # The prompt is kept verbatim: wrapping its lines would change the text
+    # the model receives. The noqa at the end covers its long lines.
     return '''Fix the reported issue in the repository at /testbed, using
 Thought -> Code -> Observation.
 Write a Thought of at most 40 words and one closed ```python block, then <end_code>.
@@ -291,9 +290,9 @@ async def run_swebench_agent(
             provider=provider, sandbox=sandbox, limits=limits,
             started_at=started_at, deadline=deadline,
         )
-        # Un parche real siempre empieza por "diff --git". Comprobar sólo que
-        # no esté vacío no basta: un modelo entregó el aviso "No changes yet."
-        # de get_patch como si fuera su solución y la tarea se daba por buena.
+        # A real patch always starts with "diff --git". Checking only that it
+        # is not empty is not enough: a model submitted get_patch's "No
+        # changes yet." notice as its solution and the task was accepted.
         if result.success and "diff --git" not in result.solution:
             result.success = False
             result.error = (
@@ -319,8 +318,8 @@ async def run_swebench_agent(
                     cleanup_errors.append(f"{type(resource).__name__}: {exc}")
         if environment is not None:
             try:
-                # El contenedor debe morir aunque se haya agotado el tiempo o
-                # nos esten cancelando: por eso el shield.
+                # The container must die even if time ran out or we are being
+                # cancelled: hence the shield.
                 with anyio.CancelScope(shield=True):
                     await anyio.to_thread.run_sync(environment.close)
             except Exception as exc:

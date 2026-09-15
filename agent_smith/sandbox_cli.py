@@ -52,8 +52,8 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-# El servidor MCP arranca con un entorno minimo, asi que hay que pasarle
-# explicitamente lo que necesita para encontrar el testbed y hablar con Docker.
+# The MCP server starts with a minimal environment, so it must be given
+# explicitly what it needs to find the testbed and talk to Docker.
 SERVER_ENVIRONMENT_NAMES = (
     "PATH", "HOME", "TESTBED_PATH", "AGENT_SMITH_CONTAINER_ID",
     "AGENT_SMITH_EVAL_SCRIPT", "AGENT_SMITH_DEADLINE",
@@ -131,8 +131,8 @@ async def run_repl(session: SandboxSession) -> int:
             line = input("... " if lines else ">>> ")
         except EOFError:
             print()
-            # Con la entrada redirigida el ultimo bloque llega sin linea en
-            # blanco.
+            # With redirected input the last block arrives without a blank
+            # line.
             if lines:
                 await _run_entry(session, "\n".join(lines))
             return 0
@@ -145,9 +145,8 @@ async def run_repl(session: SandboxSession) -> int:
         lines.append(line)
         code = "\n".join(lines)
         try:
-            # "single" espera una linea en blanco para cerrar un bloque,
-            # igual que el REPL de Python. Con "exec" el bloque se cerraba
-            # antes del else/except.
+            # "single" waits for a blank line to close a block, like the
+            # Python REPL. With "exec" the block closed before else/except.
             compiled = codeop.compile_command(code, symbol="single")
         except (OverflowError, SyntaxError, ValueError) as exc:
             print(f"{type(exc).__name__}: {exc}")

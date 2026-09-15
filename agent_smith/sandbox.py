@@ -345,8 +345,8 @@ async def _dispatch_mcp(session, message: dict) -> dict:
                        "como observación")
         return {"type": "mcp_result",
                 "error": json.dumps(data, ensure_ascii=False)}
-    # El texto es lo que espera el codigo generado: un servidor que devuelve un
-    # diccionario lo entrega aqui ya serializado como JSON.
+    # Generated code expects text: a server that returns a dict delivers it
+    # here already serialised as JSON.
     content = data.get("content", data.get("contents"))
     if content and len(content) == 1 and "text" in content[0]:
         result = content[0]["text"]

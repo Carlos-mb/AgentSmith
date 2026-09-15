@@ -62,8 +62,8 @@ class CompletionResponse:
     request_count: int
     usage_complete: bool = True
     error: str | None = None
-    # Una respuesta inservible del modelo no es un fallo del proveedor: si su
-    # consumo esta medido, el bucle puede seguir con una observacion.
+    # An unusable model reply is not a provider failure: if its usage is
+    # measured, the loop can continue with an observation.
     recoverable: bool = False
 
 
@@ -85,10 +85,10 @@ def estimate_input_tokens(messages: list[dict[str, str]]) -> int:
 def render_tool_calls(message: dict[str, Any]) -> str:
     """Render a provider's native tool calls as the <tool_use> text dialect.
 
-    Gemini decide a veces llamar funciones por su canal nativo, aunque nunca le
-    enviamos esquemas: la respuesta llega sin content y con tool_calls. Se
-    traduce al mismo texto que ya convierte code_extraction, para que exista un
-    unico sitio donde una llamada se convierte en Python.
+    Gemini sometimes calls functions through its native channel even though
+    we never send schemas: the reply arrives without content and with
+    tool_calls. It is translated into the text code_extraction already
+    converts, so there is a single place where a call becomes Python.
     """
     logger.debug("Entrando en render_tool_calls")
     calls = message.get("tool_calls")
@@ -212,10 +212,10 @@ class ProviderClient:
                     payload, self.api_keys[self.key_index],
                     min(remaining, self.config.timeout_seconds),
                 )
-            # En Python 3.10 el TimeoutError de asyncio.wait_for no hereda
-            # del TimeoutError estandar (se unificaron en 3.11). Sin nombrarlo
-            # aqui, un timeout escapaba y la tarea terminaba con el mensaje
-            # vacio "TimeoutError: ".
+            # In Python 3.10 the TimeoutError raised by asyncio.wait_for does
+            # not inherit from the builtin TimeoutError (they were merged in
+            # 3.11). Without naming it here, a timeout escaped and the task
+            # ended with the empty message "TimeoutError: ".
             except (httpx.HTTPError, TimeoutError, asyncio.TimeoutError,
                     ValueError) as exc:
                 elapsed_ms += (time.monotonic() - started) * 1000
@@ -231,11 +231,10 @@ class ProviderClient:
             model_name = response.model_name
             input_tokens += response.input_tokens
             output_tokens += response.output_tokens
-            # Cualquier respuesta que no sea 200 es un rechazo: el proveedor
-            # no llegó a generar, así que su falta de usage es un cero
-            # conocido y no un consumo desconocido. Sin esto la guarda de
-            # abajo cancelaba tanto la rotación de claves ante un 429 como el
-            # reintento ante un 503.
+            # Any response other than 200 is a rejection: the provider never
+            # generated, so its missing usage is a known zero, not an unknown
+            # consumption. Without this, the guard below cancelled both key
+            # rotation on a 429 and the retry on a 503.
             if status == 200:
                 usage_complete = usage_complete and response.usage_complete
             text = response.text
@@ -263,10 +262,9 @@ class ProviderClient:
                     or output_tokens > max_output_tokens):
                 error = "Provider usage exceeded the remaining token budget."
                 break
-            # Una respuesta 200 sin texto es un fallo transitorio observado
-            # en Gemini: sin reintento perdiamos la tarea entera por un hueco
-            # puntual. Su usage viene medido, asi que reintentar no oculta
-            # consumo.
+            # A 200 response without text is a transient failure seen in
+            # Gemini: without a retry we lost the whole task to a one-off
+            # gap. Its usage is measured, so retrying hides no consumption.
             if status == 200 and text.strip():
                 break
             if attempt == self.config.max_retries:
@@ -315,8 +313,9 @@ class ProviderClient:
             payload["reasoning"] = {"enabled": self.config.reasoning_enabled}
         hostname = urlparse(self.config.api_url).hostname
         if self.config.stop_sequences and hostname == "openrouter.ai":
-            # Exigir el respeto de stop sólo cuando lo usamos: varios modelos
-            # gratuitos no lo admiten y pedirlo los dejaría fuera del enrutado.
+            # Require stop to be honoured only when we use it: several free
+            # models do not support it, and asking for it would exclude them
+            # from routing.
             payload["provider"] = {"require_parameters": True}
         logger.debug(
             "Parámetros LLM: temperatura=%s, límite=%s, stop=%s, "
@@ -383,8 +382,8 @@ class ProviderClient:
         try:
             message = payload["choices"][0]["message"]
             text = message["content"]
-            # Una cadena vacía es tan inservible como un content ausente, y así
-            # los dos casos se reintentan y se informan igual.
+            # An empty string is as useless as missing content; this way both
+            # cases are retried and reported the same way.
             if not isinstance(text, str) or not text.strip():
                 raise ValueError("Expected text content.")
         except (KeyError, IndexError, TypeError, ValueError):

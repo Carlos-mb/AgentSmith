@@ -28,8 +28,8 @@ CLEANUP_RESERVE_SECONDS = 5
 
 def build_mbpp_system_prompt(mcp_manual: str) -> str:
     logger.debug("Entrando en build_mbpp_system_prompt")
-    # El prompt va tal cual: partir sus líneas cambiaría el texto que recibe
-    # el modelo. Por eso el noqa del final cubre sus líneas largas.
+    # The prompt is kept verbatim: wrapping its lines would change the text
+    # the model receives. The noqa at the end covers its long lines.
     return '''Solve the supplied Python task using Thought -> Code -> Observation.
 Write a Thought of at most 20 words and one closed ```python block, then <end_code>.
 Keep code concise, without explanatory comments. Never discuss the delimiters.

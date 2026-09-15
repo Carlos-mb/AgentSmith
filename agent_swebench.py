@@ -76,8 +76,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.error("Error: %s", exc)
         return 1
     except KeyboardInterrupt:
-        # Ctrl+C: asyncio.run ya ha cancelado la tarea y cerrado el contenedor;
-        # sin esto el usuario veía un traceback que parecía un fallo.
+        # Ctrl+C: asyncio.run has already cancelled the task and closed the
+        # container; without this the user saw a traceback that looked like
+        # a failure.
         print("Interrupted: no solution file was written.", file=sys.stderr)
         return 130
 

@@ -218,10 +218,9 @@ def execute_block(
     try:
         with redirect_stdout(output), redirect_stderr(output):
             parsed = ast.parse(code)
-            # Como en el REPL de Python: si el bloque termina en una
-            # expresión, mostrar su valor. Los modelos llaman a las
-            # herramientas sin print, y sin esto la observación llegaba
-            # vacía y se quedaban en bucle.
+            # As in the Python REPL: if the block ends with an expression,
+            # print its value. The models call tools without print, and
+            # without this the observation came back empty and they looped.
             trailing = None
             if parsed.body and isinstance(parsed.body[-1], ast.Expr):
                 trailing = parsed.body.pop().value

@@ -27,18 +27,17 @@ logger = get_logger('agent_smith.swebench_tools')
 TESTBED_DIRECTORY = "/testbed"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 120
 TEST_TIMEOUT_SECONDS = 900
-# Cada observacion se reenvia al modelo en TODAS las iteraciones siguientes,
-# asi que su coste real es su tamaño multiplicado por lo que queda de tarea.
-# Con el limite anterior de 12.000, una sola busqueda se comio 72.264 de los
-# 300.000 tokens de entrada. El parche no pasa por aqui: get_patch se
-# devuelve entero.
+# Every observation is resent to the model on ALL following iterations, so
+# its real cost is its size times what is left of the task. With the old
+# 12,000 limit, a single search used 72,264 of the 300,000 input tokens.
+# The patch does not go through here: get_patch is returned in full.
 MAX_TOOL_OUTPUT_CHARACTERS = 4_000
 MAX_SEARCH_MATCHES = 50
 SKIPPED_DIRECTORIES = {".git", "__pycache__", ".tox", ".venv", "node_modules"}
 
-# Estos programas se ejecutan donde esta el checkout. Sus argumentos viajan
-# como argv separados, nunca interpolados: asi ni las comillas ni los saltos
-# de linea del modelo pueden convertirse en otra orden.
+# These programs run where the checkout lives. Their arguments travel as
+# separate argv, never interpolated: that way neither the model's quotes
+# nor its line breaks can turn into another command.
 _READ_PROGRAM = """
 import pathlib, sys
 lines = pathlib.Path(sys.argv[1]).read_text(errors="replace").splitlines()
@@ -57,9 +56,9 @@ if count != 1:
     print("edit_file refused: expected exactly one match of old_str, "
           f"found {count}.")
     if count > 1:
-        # Decirle DONDE estan: sin esto el modelo reintenta a ciegas.
-        # Observado en una tarea real, ocho iteraciones seguidas contra un
-        # docstring repetido.
+        # Tell it WHERE they are: without this the model retries blindly.
+        # Seen in a real task: eight iterations in a row against a repeated
+        # docstring.
         places, start = [], 0
         while True:
             found = content.find(old, start)
@@ -311,9 +310,9 @@ def run_tests() -> str:
         logger.warning("Sin eval_script en el entorno; se usa pytest")
         script = "pytest -q"
     try:
-        # stderr se une a stdout en orden: unittest (Django) escribe ahi su
-        # resumen, y tambien van ahi los marcadores que imprime el set -x del
-        # eval_script.
+        # stderr is merged into stdout in order: unittest (Django) writes its
+        # summary there, and so do the markers printed by the eval_script's
+        # set -x.
         completed = _run(
             ["/bin/bash", "-lc", "exec 2>&1\n" + script],
             timeout_seconds=_remaining_seconds(TEST_TIMEOUT_SECONDS),
@@ -323,10 +322,10 @@ def run_tests() -> str:
         return ("exit_code: timeout\nTests timed out after "
                 f"{TEST_TIMEOUT_SECONDS} seconds.")
     output = completed.stdout
-    # Antes el recorte dejaba el principio (git status, cambios de modo) y el
-    # final (avisos), y el resultado de los tests caia en medio: el modelo
-    # nunca lo veia. El exit_code tampoco sirve: es el del git checkout final
-    # del guion.
+    # The old truncation kept the beginning (git status, mode changes) and
+    # the end (warnings), and the test result fell in the middle: the model
+    # never saw it. The exit_code is no use either: it belongs to the
+    # script's final git checkout.
     start = output.find(">>>>> Start Test Output")
     end = output.rfind(">>>>> End Test Output")
     if 0 <= start < end:
@@ -350,5 +349,5 @@ def get_patch() -> str:
     if not completed.stdout.strip():
         logger.info("git diff vacio: todavia no hay cambios")
         return "No changes yet."
-    # El parche es la entrega: se conserva entero aunque sea largo.
+    # The patch is the deliverable: it is kept whole however long it is.
     return completed.stdout

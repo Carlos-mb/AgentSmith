@@ -94,10 +94,10 @@ def convert_tool_calls(llm_output: str) -> str:
         if not name.isidentifier():
             raise ValueError(f"Tool call without a usable name: {name!r}")
 
-        # Los marcadores <arg_value> y </arg_value> se tratan como opcionales a
-        # proposito: con valores largos los modelos se dejan uno de los dos, y
-        # antes perdiamos la iteracion entera. El valor es lo que hay tras la
-        # clave, hasta la siguiente clave o el fin de la llamada.
+        # The <arg_value> and </arg_value> markers are optional on purpose:
+        # with long values the models drop one of the two, and we used to
+        # lose the whole iteration. The value is whatever follows the key,
+        # up to the next key or the end of the call.
         arguments = []
         for chunk in re.split(r"<arg_key>", body)[1:]:
             key, separator, rest = chunk.partition("</arg_key>")
@@ -115,8 +115,8 @@ def convert_tool_calls(llm_output: str) -> str:
             if closed:
                 value = value.rsplit("</arg_value>", 1)[0]
             if not (opened and closed):
-                # Falta un marcador: los saltos que lo rodeaban no son del
-                # valor.
+                # A marker is missing: the surrounding line breaks are not
+                # part of the value.
                 value = value.strip()
             arguments.append(f"{key}={_literal(value)}")
 
@@ -129,10 +129,10 @@ def convert_tool_calls(llm_output: str) -> str:
 def convert_tool_use(llm_output: str) -> str:
     """Convert <tool_use> blocks with JSON arguments into Python calls.
 
-    Un tercer dialecto observado en vivo. En esa ejecución el modelo
-    diagnosticó bien el bug y escribió la edición correcta, pero en este
-    formato, y no se ejecutó nada en 23 de 29 iteraciones. El nombre del
-    servidor se ignora: la herramienta ya es una función local del sandbox.
+    A third dialect seen live. In that run the model diagnosed the bug
+    correctly and wrote the right edit, but in this format, so nothing ran
+    in 23 of 29 iterations. The server name is ignored: the tool is already
+    a local function in the sandbox.
     """
     logger.debug("Entrando en convert_tool_use")
     statements = []
@@ -187,7 +187,7 @@ def extract_agent_code(llm_output: str) -> tuple[str, str]:
             logger.warning("Llamada de herramienta malformada: %s", exc)
             return "", f"Malformed tool call: {exc}"
         if converted:
-            # La hoja exige avisar cuando un bloque mal formado se
-            # interpreta igual.
+            # The grading sheet requires a notice when a malformed block is
+            # interpreted anyway.
             return converted, CONVERTED_TOOL_CALL_FEEDBACK
     return code, feedback

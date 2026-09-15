@@ -94,15 +94,16 @@ class AgentLimits(BaseModel):
     limits as values and returns usage without mutating the loop's state.
     """
 
-    # El CLI toma started_at con monotonic antes de leer archivos. El
-    # adaptador calcula deadline=started_at+max_time_seconds; no reinicia el
-    # reloj al entrar al bucle. El tiempo incluye preparación, reintentos,
-    # herramientas y cierre.
-    # Comprobar los límites antes/después de cada petición y antes de aceptar
-    # final_answer. Si falta usage, informar fallo y subtotales conocidos.
-    # Límites subject VI.1 y moulinette/models.py: MBPP 10/6000/1500/120 s;
-    # SWE-bench 30/300000/10000/900 s. El README de moulinette está
-    # desactualizado.
+    # The CLI takes started_at with monotonic before reading any file. The
+    # adapter computes deadline=started_at+max_time_seconds; it does not
+    # restart the clock when entering the loop. The time covers setup,
+    # retries, tools and cleanup.
+    # Check the limits before/after each request and before accepting
+    # final_answer. If usage is missing, report a failure and the known
+    # subtotals.
+    # Limits from subject VI.1 and moulinette/models.py: MBPP
+    # 10/6000/1500/120 s; SWE-bench 30/300000/10000/900 s. The moulinette
+    # README is out of date.
 
     max_iterations: int = Field(..., gt=0)
     max_input_tokens: int = Field(..., ge=0)

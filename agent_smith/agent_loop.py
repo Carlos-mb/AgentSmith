@@ -27,14 +27,13 @@ def trim_history(
 ) -> list[dict[str, str]]:
     """Keep the system prompt, the task, and as many recent exchanges as fit.
 
-    La lista entera se reenvía en cada petición, así que conservarla completa
-    crece de forma cuadrática: una ejecución gastó 296.410 de sus 300.000
-    tokens de entrada. Una ventana fija tampoco sirve: con tres parejas el
-    modelo dejó de recordar que ya había editado un archivo y releyó lo mismo
-    22 veces. Por eso el tamaño lo decide el presupuesto que queda repartido
-    entre las iteraciones que quedan. Siempre se mandan
-    MINIMUM_HISTORY_MESSAGES aunque no quepan: sin los últimos intercambios
-    el modelo no puede continuar.
+    The whole list is resent on every request, so keeping all of it grows
+    quadratically: one run spent 296,410 of its 300,000 input tokens. A fixed
+    window does not work either: with three pairs the model forgot it had
+    already edited a file and re-read the same ranges 22 times. So the size
+    is set by the remaining budget divided among the remaining iterations.
+    MINIMUM_HISTORY_MESSAGES are always sent even if they do not fit:
+    without the latest exchanges the model cannot continue.
     """
     logger.debug("Entrando en trim_history")
     head, rest = messages[:2], messages[2:]
@@ -84,8 +83,9 @@ def build_observation(
         parts.append("Final answer:\n" + execution.final_answer)
 
     if not parts:
-        # Un bloque que no imprime nada dejaba la observación vacía y el modelo
-        # repetía la misma llamada sin entender por qué no veía resultado.
+        # A block that printed nothing left the observation empty, and the
+        # model repeated the same call without understanding why it saw no
+        # result.
         parts.append("The block ran without errors and printed nothing.")
 
     return "\n".join(parts)
@@ -138,7 +138,7 @@ async def run_agent_loop(
                     or output_tokens >= limits.max_output_tokens):
                 error = "Task token budget exhausted."
                 break
-            # Reparto lo que queda de entrada entre las iteraciones que faltan.
+            # Share the remaining input budget among the remaining iterations.
             share = ((limits.max_input_tokens - input_tokens)
                      // (limits.max_iterations - number + 1))
             completion = await provider.complete(
@@ -185,9 +185,8 @@ async def run_agent_loop(
                 step.sandbox_output = error
                 break
             if error:
-                # El modelo no dijo nada utilizable, pero su consumo esta
-                # medido: se le devuelve como observacion en vez de terminar
-                # la tarea.
+                # The model said nothing usable, but its usage is measured:
+                # return it as an observation instead of ending the task.
                 logger.warning("Iteración %s sin respuesta utilizable: %s",
                                number, error)
                 step.sandbox_output = error
