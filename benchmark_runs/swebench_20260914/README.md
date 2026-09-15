@@ -7,8 +7,10 @@ without `--skip-metrics`.
 ## Tasks run
 
 The exam draws three tasks at random from a pool of six (`EXAM_POOL` in
-moulinette's `swebench/interact.py`) and requires two to pass. Five of the six
-pass here; the sixth, `sympy__sympy-14711`, has not been run.
+moulinette's `swebench/interact.py`) and requires two to pass. All six pass
+here with at least one model: five with `gemini-3.5-flash-lite`, and
+`sympy__sympy-14711` only with `dots-studio/dots-3-note-preview:free`, because
+`gemini-3.5-flash-lite` failed it twice.
 `django__django-12308` and `scikit-learn__scikit-learn-11310` are **not** in the
 pool. They are listed because they were run and failed. (An earlier version of
 this file wrongly counted them in a pool of seven.)
@@ -20,6 +22,9 @@ this file wrongly counted them in a pool of seven.)
 | `sympy__sympy-13480` | gemini-3.5-flash-lite | 8 | 27,767 | 455 | 24 s | **PASSED** |
 | `pydata__xarray-4629` | gemini-3.5-flash-lite | 8 | 32,070 | 280 | 16 s | **PASSED** |
 | `scikit-learn__scikit-learn-13439` | gemini-3.5-flash-lite | 14 | 74,031 | 2,359 | 60 s | **PASSED** |
+| `sympy__sympy-14711` | dots-3-note-preview:free | 26 | 96,724 | 4,799 | 100 s | **PASSED** (15 Sep) |
+| `sympy__sympy-14711` | gemini-3.5-flash-lite | 30 | 263,658 | 4,609 | 52 s | FAILED — iteration limit, no final answer (15 Sep) |
+| `sympy__sympy-14711` | gemini-3.5-flash-lite | 30 | 274,622 | 5,057 | 54 s | FAILED — same, second attempt (15 Sep) |
 | `django__django-12308` | gemini-3.5-flash-lite | 26 | 201,313 | 974 | 36 s | FAILED — patch submitted but it does not fix the issue |
 | `scikit-learn__scikit-learn-11310` | gemini-3.5-flash-lite | 29 | 292,286 | 6,327 | 50 s | FAILED — input budget exhausted before a patch |
 

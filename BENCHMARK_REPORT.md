@@ -35,7 +35,10 @@ Why these three:
 - Their images are the smallest in the pool, about 4 GB each, against 5.3 GB for
   `scikit-learn__scikit-learn-13439` and 7.6 GB for `pydata__xarray-4629`. The
   disk filled once while images were being pulled. The sixth pool task,
-  `sympy__sympy-14711`, has not been run.
+  `sympy__sympy-14711`, was run separately after the matrix.
+  `gemini-3.5-flash-lite` failed it twice: 30 iterations and no final answer.
+  `dots-3-note-preview` passed it in 26 iterations with 96,724 input tokens.
+  The evidence is in `benchmark_runs/swebench_20260914/sympy-14711/`.
 
 **When.** `gemini-3.5-flash-lite` on 14 September 2026; the other seven models
 and the ablation on 15 September 2026. One run per model × task.
@@ -257,7 +260,11 @@ first entry in `configs/models_template.json`.
 and no retries. It uses about 14% more input tokens and 2.6× the output tokens
 of the selected model. What matters is that it sits on a different provider
 with a separate quota, so an outage or an exhausted quota at Google does not
-stop the agent.
+stop the agent. It is also the only model that has passed
+`sympy__sympy-14711`, the one pool task the selected model fails. In both
+failed attempts, `gemini-3.5-flash-lite` wrote its fix as a function defined
+inside the sandbox instead of editing the file, reached `edit_file` only at
+step 25 or 28, and broke the tests.
 
 **Usable third: `inclusionai/ling-3.0-flash-vl:free`.** It is the fastest per
 step (1.5 s), cheap, and passed 2/3. Its failure was a submission without a
