@@ -45,12 +45,12 @@ defaults to 0.1 as in the reference, and missing-code feedback asks for the whol
 block again. Each step now records the model reported by the API, which matters
 when the explicitly selected free router changes models between requests.
 
-The manual benchmark report is still pending. The SWE-bench tools and adapter are
-implemented: the tools pass the sandbox exam's own test, and a controlled cycle
-test drives the real CLI, container, MCP server and worker through exploration,
-an edit and `final_answer(get_patch())`. No SWE-bench task has been validated by
-moulinette yet.
-Their necessary stubs retain `NotImplementedError`. Extraction takes a closed
+The SWE-bench tools and adapter are implemented: the tools pass the sandbox
+exam's own test, and a controlled cycle test drives the real CLI, container, MCP
+server and worker through exploration, an edit and `final_answer(get_patch())`.
+Five tasks of the exam's pool pass moulinette
+([evidence](benchmark_runs/swebench_20260914/README.md)), and the model
+comparison is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md). Extraction takes a closed
 ```python block first and otherwise converts `<tool_call>` blocks into the
 equivalent Python calls. That conversion is not optional in practice: in a live
 SWE-bench run the selected model switched to that dialect after its first
@@ -484,12 +484,11 @@ change.
 
 ## Benchmark results and analysis
 
-The manual [benchmark report](BENCHMARK_REPORT.md) is pending. It must compare at
-least five models on the same set of at least three SWE-bench tasks, include the
-required results and provider reliability metrics, analyse at least two
-intermediary metrics, and show a before/after comparison using the same model and
-tasks. Conclusions must follow the measured results. Keep the backing
-`solution.json` evidence in the repository. No report generator is planned.
+The [benchmark report](BENCHMARK_REPORT.md) compares eight models on the same
+three SWE-bench tasks, with provider reliability, two intermediary metrics and
+two prompt ablations. `gemini-3.5-flash-lite` is the selected model, with
+`dots-studio/dots-3-note-preview:free` as the backup on a second provider.
+Every figure is read from a `solution.json` kept under `benchmark_runs/`.
 
 ## Resources and AI assistance
 

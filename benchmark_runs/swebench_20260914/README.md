@@ -4,10 +4,14 @@ Each directory holds that task's `task.json`, `solution.json` and the moulinette
 output. Every run below was validated with `moulinette_eval validate swebench`,
 without `--skip-metrics`.
 
-## The exam's pool
+## Tasks run
 
-The exam draws three tasks at random from a fixed pool of seven and requires two
-to pass. Five of those seven pass here.
+The exam draws three tasks at random from a pool of six (`EXAM_POOL` in
+moulinette's `swebench/interact.py`) and requires two to pass. Five of the six
+pass here; the sixth, `sympy__sympy-14711`, has not been run.
+`django__django-12308` and `scikit-learn__scikit-learn-11310` are **not** in the
+pool. They are listed because they were run and failed. (An earlier version of
+this file wrongly counted them in a pool of seven.)
 
 | Task | Model | Iterations | Input tokens | Output tokens | Time | Result |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
