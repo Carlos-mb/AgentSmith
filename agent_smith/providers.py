@@ -193,7 +193,10 @@ class ProviderClient:
                     payload, self.api_keys[self.key_index],
                     min(remaining, self.config.timeout_seconds),
                 )
-            except (httpx.HTTPError, TimeoutError, ValueError) as exc:
+            # En Python 3.10 el TimeoutError de asyncio.wait_for no hereda del
+            # TimeoutError estandar (se unificaron en 3.11). Sin nombrarlo aqui, un
+            # timeout escapaba y la tarea terminaba con el mensaje vacio "TimeoutError: ".
+            except (httpx.HTTPError, TimeoutError, asyncio.TimeoutError, ValueError) as exc:
                 elapsed_ms += (time.monotonic() - started) * 1000
                 usage_complete = False
                 error = f"LLM request failed ({type(exc).__name__}); token usage is unknown."

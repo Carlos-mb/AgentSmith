@@ -145,6 +145,29 @@ def test_run_tests_uses_the_supplied_eval_script(testbed, monkeypatch):
     assert "exit_code: 0" in result
 
 
+EVAL_SCRIPT = """#!/bin/bash
+set -uxo pipefail
+for i in $(seq 400); do echo "old mode 100644 noise"; done
+: '>>>>> Start Test Output'
+echo 'Ran 59 tests in 0.111s' >&2
+echo 'OK' >&2
+: '>>>>> End Test Output'
+for i in $(seq 400); do echo "DeprecationWarning noise" >&2; done
+"""
+
+
+def test_run_tests_returns_only_the_test_output_section(testbed, monkeypatch):
+    # Como el eval_script real: ruido antes y despues, y el resumen de unittest
+    # (Django) en stderr. Antes el recorte dejaba el ruido y perdia el resumen.
+    monkeypatch.setenv("AGENT_SMITH_EVAL_SCRIPT", EVAL_SCRIPT)
+
+    result = swebench_tools.run_tests()
+
+    assert "Ran 59 tests in 0.111s" in result
+    assert "OK" in result
+    assert "noise" not in result
+
+
 def test_paths_outside_the_testbed_are_refused(testbed):
     with pytest.raises(ValueError):
         swebench_tools.read_file("/etc/passwd", 1, 5)

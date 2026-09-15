@@ -214,19 +214,27 @@ against what the free catalogue still offers. Several models those reports relie
 
 Through Google's OpenAI-compatible endpoint, which has its own daily quota:
 
-- `gemini-3.5-flash-lite` — the primary candidate. Another project reported it passing
-  SWE-bench repeatedly. Here it explores, reads and edits real files, but has not yet
-  converged on a submitted patch.
-- `gemini-3.1-flash-lite` and `gemini-3.8-flash` — alternatives for the model comparison.
+- `gemini-3.5-flash-lite` — **the SWE-bench model.** It passed 3/3 in the benchmark
+  report and 2/3 in the real `exam_swebench.sh`. It fails `sympy__sympy-14711` every
+  time.
+- `gemini-3.1-flash-lite`, `gemini-3.5-flash` and `gemini-3.8-flash` — measured in the
+  [benchmark report](BENCHMARK_REPORT.md) and discarded.
 
 Through OpenRouter, all on the free tier:
 
-- `dots-studio/dots-3-note-preview:free` and `nvidia/nemotron-3.5-lightning:free` —
-  both reported passing SWE-bench elsewhere. Untested here: the daily free quota was
-  exhausted before they could run.
-- `google/gemma-4-31b-it:free` — the same model family another project passed 3/3 with.
-- `inclusionai/ling-3.0-flash-vl:free` — kept because it is the model that validated
-  MBPP tasks 396 and 163 through moulinette.
+- `dots-studio/dots-3-note-preview:free` — **the SWE-bench backup.** It passed 3/3 in
+  the report, runs on a second provider with its own quota, and is the only model that
+  passed `sympy__sympy-14711`.
+- `nvidia/nemotron-3.5-lightning:free` and `google/gemma-4-31b-it:free` — measured in
+  the report and discarded (0/3).
+- `inclusionai/ling-3.0-flash-vl:free` — **the MBPP model.** It validated tasks 396
+  and 163 through moulinette and scored 5/5 in the real `exam_mbpp.sh`.
+
+For the exam, pass `--model-name gemini-3.5-flash-lite --provider-url
+https://generativelanguage.googleapis.com/v1beta/openai` to `exam_swebench.sh`, and
+`--model-name inclusionai/ling-3.0-flash-vl:free --provider-url
+https://openrouter.ai/api/v1` to `exam_mbpp.sh`. The `.env` must contain
+`AGENT_SMITH_MODELS_CONFIG=configs/models_template.json`, as `.env.example` does.
 
 The three OpenRouter entries above declare no stop sequence because those models do not
 support one. The client therefore only asks OpenRouter to honour parameters when a stop

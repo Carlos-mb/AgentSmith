@@ -167,6 +167,16 @@ def test_transport_error_does_not_leak_credentials_or_retry(monkeypatch):
     assert "fake-one" not in result.error
 
 
+def test_a_request_timeout_ends_with_an_explicit_message(monkeypatch):
+    # asyncio.wait_for lanza asyncio.TimeoutError, que en 3.10 no es TimeoutError.
+    async def expire(*args, **kwargs):
+        raise asyncio.TimeoutError()
+    monkeypatch.setattr(ProviderClient, "_send_request", expire)
+    result = complete(ProviderClient(config(), {"KEY_ONE": "fake-one"}))
+    assert result.request_count == 1 and not result.usage_complete
+    assert result.error == "LLM request failed (TimeoutError); token usage is unknown."
+
+
 def test_provider_error_keeps_its_diagnosis_without_leaking_keys(monkeypatch):
     mock_http(monkeypatch, lambda request: httpx.Response(503, json={
         "error": {"message": "Model overloaded for fake-one; alternative fake-two."},

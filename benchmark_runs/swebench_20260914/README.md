@@ -9,8 +9,9 @@ without `--skip-metrics`.
 The exam draws three tasks at random from a pool of six (`EXAM_POOL` in
 moulinette's `swebench/interact.py`) and requires two to pass. All six pass
 here with at least one model: five with `gemini-3.5-flash-lite`, and
-`sympy__sympy-14711` only with `dots-studio/dots-3-note-preview:free`, because
-`gemini-3.5-flash-lite` failed it twice.
+`sympy__sympy-14711` only with `dots-studio/dots-3-note-preview:free`.
+`gemini-3.5-flash-lite` failed it every time: twice on its own (below), once in
+the real exam run, and once after the `run_tests` fix (`ablation/run_tests_fix/`).
 `django__django-12308` and `scikit-learn__scikit-learn-11310` are **not** in the
 pool. They are listed because they were run and failed. (An earlier version of
 this file wrongly counted them in a pool of seven.)

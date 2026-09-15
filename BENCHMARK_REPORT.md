@@ -7,7 +7,8 @@ result was checked with `moulinette_eval validate swebench`, never with
 
 ## 1. Setup
 
-**Agent.** This repository at commit `c5853a8`: one Thought → Code →
+**Agent.** This repository at commit `c5853a8`; section 5.3 adds one later
+change: one Thought → Code →
 Observation loop, nine MCP tools, the task container held open by the agent's
 stdin. Exam limits: 30 iterations, 300,000 input tokens, 10,000 output tokens,
 900 seconds. Every model uses the same prompt and `configs/models_template.json`:
@@ -36,7 +37,9 @@ Why these three:
   `scikit-learn__scikit-learn-13439` and 7.6 GB for `pydata__xarray-4629`. The
   disk filled once while images were being pulled. The sixth pool task,
   `sympy__sympy-14711`, was run separately after the matrix.
-  `gemini-3.5-flash-lite` failed it twice: 30 iterations and no final answer.
+  `gemini-3.5-flash-lite` failed all four of its attempts, each time reaching
+  30 iterations with no final answer: two on their own, one in the real
+  `exam_swebench.sh` run, and one in section 5.3.
   `dots-3-note-preview` passed it in 26 iterations with 96,724 input tokens.
   The evidence is in `benchmark_runs/swebench_20260914/sympy-14711/`.
 
@@ -146,7 +149,8 @@ edit that either calls `run_tests` or runs a test command through `run_command`
 whose output shows a passing summary (sympy `tests finished: … passed` with no
 failures, a unittest `OK` line). A `run_tests` call on the final code counts as
 passing because it runs the same `eval_script` moulinette runs, and these tasks
-passed moulinette. Its own output cannot confirm this; see section 7.
+passed moulinette. In these runs its own output could not confirm this
+(section 7).
 
 | Run | Iterations after tests pass | Input tokens spent after tests pass |
 | --- | ---: | ---: |
@@ -178,10 +182,12 @@ Ablation rows are in task order 13480 / 18189 / 11066. Without the warning:
   `final_answer`. Those late steps are the most expensive ones, because each
   resends the whole grown history. This is the clearest efficiency gain left
   in the agent.
-- **Models verify through `run_command` instead of `run_tests`.** In 5 of the
-  10 passing matrix runs, the model never called `run_tests` after its last
-  edit and ran the test file itself instead. A likely reason is in section 7:
-  `run_tests` output hides the result.
+- **Models verify through `run_command`, not `run_tests`.** In 5 of the 10
+  passing matrix runs, the model never called `run_tests` after its last edit
+  and ran the test file itself instead. We suspected `run_tests`' output,
+  which hid the result (section 7). Fixing it changed nothing:
+  `gemini-3.5-flash-lite` then did not call `run_tests` once in four runs
+  (section 5.3). So the post-pass iterations have another cause.
 
 ## 5. Ablation
 
@@ -249,6 +255,45 @@ and `04_ling_simple_prompt/`, with both prompts saved next to them. The shorter
 prompt saved tokens and lost correctness. The original prompt stayed. This is
 a single task and sample, so it shows a direction, not a rate.
 
+### 5.3 SWE-bench: showing the test result in `run_tests` (a tool change)
+
+**Change.** `run_tests` used to return the first and last 2,000 characters of
+the eval script's output. Those were git noise and deprecation warnings; the
+test summary fell in between (section 7). Now it merges `stderr` into `stdout`
+and returns only the section between the script's `>>>>> Start Test Output`
+and `>>>>> End Test Output` markers. The code is `run_tests` in
+`agent_smith/swebench_tools.py`. Same model and tasks, same day; "before" is
+section 5.1's "with the warning" runs, which had identical code apart from this
+change.
+
+| Task | Before | After |
+| --- | --- | --- |
+| `sympy__sympy-13480` | **PASS** · 6 / 17,136 / 329 / 15 s | **PASS** · 7 / 18,749 / 481 / 11 s |
+| `sympy__sympy-18189` | **PASS** · 11 / 45,236 / 985 / 141 s | **PASS** · 8 / 28,018 / 637 / 18 s |
+| `django__django-11066` | **PASS** · 9 / 31,246 / 261 / 12 s | **PASS** · 7 / 24,575 / 527 / 11 s |
+| **Total** | 3/3 · 26 / 93,618 / 1,575 / 168 s | 3/3 · 22 / 71,342 / 1,645 / 40 s |
+| Iterations after tests pass | 2, 2, 2 | 2, 2, 2 |
+| Calls to `run_tests` | 1 | 0 |
+| `sympy__sympy-14711` | FAIL in every earlier attempt | FAIL · 30 / 246,391 / 4,514 / 48 s |
+
+Evidence: `benchmark_runs/swebench_20260914/ablation/run_tests_fix/gemini-3.5-flash-lite/<task>/`.
+
+**What was learned.**
+
+- **The fix is correct but did not change the agent's behaviour.** A unit test
+  fails on the old code and passes on the new. But this model almost never
+  calls `run_tests`: once in the three runs before, and not at all in the four
+  after. It tests with its own `run_command` instead.
+- **The 24% fewer input tokens is not an effect.** It is within the
+  run-to-run noise measured in 5.1, and the mechanism was never exercised.
+- **This refutes the hypothesis behind the change.** The two post-pass
+  iterations per task did not move, so hiding the test result was not their
+  cause. The fix does not rescue `sympy__sympy-14711` either.
+- **Decision: keep it.** The tool is now correct for any model that does use
+  it, and the change is a few lines. A change aimed at the real post-pass cost
+  would be a prompt rule to submit as soon as the tests pass. That remains
+  untested.
+
 ## 6. Conclusions
 
 **Selected: `gemini-3.5-flash-lite`.** It passed all nine of its runs: three on
@@ -261,8 +306,8 @@ and no retries. It uses about 14% more input tokens and 2.6× the output tokens
 of the selected model. What matters is that it sits on a different provider
 with a separate quota, so an outage or an exhausted quota at Google does not
 stop the agent. It is also the only model that has passed
-`sympy__sympy-14711`, the one pool task the selected model fails. In both
-failed attempts, `gemini-3.5-flash-lite` wrote its fix as a function defined
+`sympy__sympy-14711`, the one pool task the selected model fails. In the two
+attempts examined step by step, `gemini-3.5-flash-lite` wrote its fix as a function defined
 inside the sandbox instead of editing the file, reached `edit_file` only at
 step 25 or 28, and broke the tests.
 
@@ -292,21 +337,25 @@ by up to four iterations per task.
 **Cost.** Every run used free tiers and cost nothing. The token columns are
 what a paid tier would bill.
 
-## 7. Known limitations of the agent found while measuring
+## 7. Agent defects found while measuring (both fixed)
 
 - **`run_tests` hides the test result from the model.** Its output is capped at
   4,000 characters, keeping the beginning and the end. Here, the beginning is
   the `git status` and mode-change noise the `eval_script` prints, and the end
   is deprecation warnings. The test summary falls in the omitted middle, and
   the reported `exit_code` belongs to the script's last command, not to the
-  tests. This probably explains why models re-test through `run_command`, and
-  part of the post-pass iterations in section 4b. Not changed yet.
+  tests. Fixed on 15 September; section 5.3 measures the effect.
+  `test_run_tests_returns_only_the_test_output_section` fails on the old code.
 - **A provider timeout ends the task with the bare message `TimeoutError:`.**
   On Python 3.10, the `asyncio.TimeoutError` raised by `asyncio.wait_for` is
   not a subclass of the built-in `TimeoutError` the client catches. The result
   file is still written and the run ends as designed, since a timed-out
   request has unknown usage and is not retried. Only the explanatory message
-  and the step record are lost.
+  and the step record are lost. Fixed: the client also catches
+  `asyncio.TimeoutError`, and `test_a_request_timeout_ends_with_an_explicit_message`
+  fails on the old code.
+
+The runs in sections 2 to 5.2 were made before both fixes.
 
 ## 8. Reproducing a cell
 

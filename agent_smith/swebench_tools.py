@@ -277,24 +277,35 @@ def run_command(command: str, workdir: str = TESTBED_DIRECTORY) -> str:
 
 
 def run_tests() -> str:
-    """Run the evaluation script supplied with the task, or pytest when absent."""
+    """Run the evaluation script supplied with the task, or pytest when absent.
+
+    With an eval_script, only the part between its Start/End Test Output markers is
+    returned: that is where the test result is.
+    """
     logger.debug("Entrando en run_tests")
     script = os.environ.get("AGENT_SMITH_EVAL_SCRIPT", "")
     if not script:
         logger.warning("Sin eval_script en el entorno; se usa pytest")
         script = "pytest -q"
     try:
+        # stderr se une a stdout en orden: unittest (Django) escribe ahi su resumen,
+        # y tambien van ahi los marcadores que imprime el set -x del eval_script.
         completed = _run(
-            ["/bin/bash", "-lc", script],
+            ["/bin/bash", "-lc", "exec 2>&1\n" + script],
             timeout_seconds=_remaining_seconds(TEST_TIMEOUT_SECONDS),
         )
     except subprocess.TimeoutExpired:
         logger.error("Los tests superaron su timeout")
         return f"exit_code: timeout\nTests timed out after {TEST_TIMEOUT_SECONDS} seconds."
-    return _truncate(
-        f"exit_code: {completed.returncode}\n"
-        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
-    )
+    output = completed.stdout
+    # Antes el recorte dejaba el principio (git status, cambios de modo) y el final
+    # (avisos), y el resultado de los tests caia en medio: el modelo nunca lo veia.
+    # El exit_code tampoco sirve: es el del git checkout final del guion.
+    start = output.find(">>>>> Start Test Output")
+    end = output.rfind(">>>>> End Test Output")
+    if 0 <= start < end:
+        return _truncate(output[start:end])
+    return _truncate(f"exit_code: {completed.returncode}\noutput:\n{output}")
 
 
 def get_patch() -> str:
