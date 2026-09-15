@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from agent_smith.logging_config import LoggingArgumentParser, configure_logging, get_logger
-
-logger = get_logger('agent_smith.sandbox_cli')
+from agent_smith.logging_config import (
+    LoggingArgumentParser, configure_logging, get_logger,
+)
 
 import argparse
 import ast
@@ -18,6 +18,8 @@ from typing import Sequence
 
 from agent_smith.mcp_client import MCPClient
 from agent_smith.sandbox import SandboxSession, load_sandbox_config
+
+logger = get_logger('agent_smith.sandbox_cli')
 
 
 def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -54,7 +56,8 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
 # explicitamente lo que necesita para encontrar el testbed y hablar con Docker.
 SERVER_ENVIRONMENT_NAMES = (
     "PATH", "HOME", "TESTBED_PATH", "AGENT_SMITH_CONTAINER_ID",
-    "AGENT_SMITH_EVAL_SCRIPT", "AGENT_SMITH_DEADLINE", "AGENT_SMITH_MBPP_SESSION",
+    "AGENT_SMITH_EVAL_SCRIPT", "AGENT_SMITH_DEADLINE",
+    "AGENT_SMITH_MBPP_SESSION",
     "DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
 )
 
@@ -75,6 +78,7 @@ def _build_mcp_client(args: argparse.Namespace) -> MCPClient | None:
         return MCPClient(server_url=args.mcp_server)
 
     return None
+
 
 async def _run_entry(session: SandboxSession, code: str) -> None:
     """Execute one complete entry and print what the sandbox reports."""
@@ -109,7 +113,8 @@ async def run_script(session: SandboxSession, text: str | None = None) -> int:
         return 1
     lines = text.splitlines()
     for node in parsed.body:
-        first = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
+        first = min([node.lineno]
+                    + [d.lineno for d in getattr(node, "decorator_list", [])])
         statement = "\n".join(lines[first - 1:node.end_lineno])
         if statement.strip() == "exit":
             return 0
@@ -126,7 +131,8 @@ async def run_repl(session: SandboxSession) -> int:
             line = input("... " if lines else ">>> ")
         except EOFError:
             print()
-            # Con la entrada redirigida el ultimo bloque llega sin linea en blanco.
+            # Con la entrada redirigida el ultimo bloque llega sin linea en
+            # blanco.
             if lines:
                 await _run_entry(session, "\n".join(lines))
             return 0
@@ -139,8 +145,9 @@ async def run_repl(session: SandboxSession) -> int:
         lines.append(line)
         code = "\n".join(lines)
         try:
-            # "single" espera una linea en blanco para cerrar un bloque, igual que el
-            # REPL de Python. Con "exec" el bloque se cerraba antes del else/except.
+            # "single" espera una linea en blanco para cerrar un bloque,
+            # igual que el REPL de Python. Con "exec" el bloque se cerraba
+            # antes del else/except.
             compiled = codeop.compile_command(code, symbol="single")
         except (OverflowError, SyntaxError, ValueError) as exc:
             print(f"{type(exc).__name__}: {exc}")
@@ -154,7 +161,7 @@ async def run_repl(session: SandboxSession) -> int:
 
 
 async def _run_sandbox(args: argparse.Namespace) -> int:
-    """Own MCP and worker lifetimes in the same asynchronous task as the REPL."""
+    """Own MCP and worker lifetimes in the same async task as the REPL."""
     logger.debug("Entrando en _run_sandbox")
     config = load_sandbox_config(args.config)
     client = _build_mcp_client(args)
@@ -164,7 +171,8 @@ async def _run_sandbox(args: argparse.Namespace) -> int:
         mcp_session = None
         if client is not None:
             mcp_session, manual = await client.start()
-        session = SandboxSession(config, mcp_session=mcp_session, manual=manual)
+        session = SandboxSession(config, mcp_session=mcp_session,
+                                 manual=manual)
         await session.start()
         if manual is not None:
             print(manual.as_text())
@@ -186,11 +194,12 @@ async def _run_sandbox(args: argparse.Namespace) -> int:
         if cleanup_errors:
             logger.error("Cleanup failed: %s", "; ".join(cleanup_errors))
             if sys.exc_info()[0] is None:
-                raise RuntimeError("Sandbox cleanup failed: " + "; ".join(cleanup_errors))
+                raise RuntimeError("Sandbox cleanup failed: "
+                                   + "; ".join(cleanup_errors))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Parse CLI arguments and drive the asynchronous sandbox with graceful errors."""
+    """Parse CLI arguments and run the async sandbox with graceful errors."""
     configure_logging()
     logger.debug("Entrando en main")
     args = parse_arguments(argv)

@@ -5,13 +5,12 @@ name, arguments and English description that build the manual the model reads,
 and the work itself belongs to agent_smith.swebench_tools.
 """
 
-from agent_smith.logging_config import configure_logging, get_logger
-
-logger = get_logger('mcp_tools_swebench')
-
 from mcp.server.fastmcp import FastMCP
 
 from agent_smith import swebench_tools
+from agent_smith.logging_config import configure_logging, get_logger
+
+logger = get_logger('mcp_tools_swebench')
 
 
 mcp = FastMCP("Agent Smith SWE-bench tools")
@@ -38,8 +37,8 @@ def edit_file(filepath: str, old_str: str, new_str: str) -> str:
     """Replace one exact fragment of a file with another.
 
     The edit is refused unless old_str appears exactly once, and refused for a
-    Python file whose result would no longer compile. Include enough surrounding
-    context in old_str to make it unique.
+    Python file whose result would no longer compile. Include enough
+    surrounding context in old_str to make it unique.
 
     Args:
         filepath: Path inside the repository to modify.
@@ -156,6 +155,7 @@ def get_patch() -> str:
 
 if __name__ == "__main__":
     configure_logging()
-    logger.info("Iniciando servidor MCP SWE-bench mediante mcp.run con transporte stdio")
+    logger.info("Iniciando servidor MCP SWE-bench mediante mcp.run "
+                "con transporte stdio")
     mcp.run(transport="stdio")
     logger.info("Servidor MCP SWE-bench cerrado")

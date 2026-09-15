@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from agent_smith.logging_config import get_logger
 
-logger = get_logger('agent_smith.swebench_agent')
-
 import argparse
 import os
 from pathlib import Path
@@ -21,6 +19,8 @@ from agent_smith.mcp_client import MCPClient
 from agent_smith.models import AgentLimits, SolutionOutput, SWEBenchTaskInput
 from agent_smith.providers import ProviderClient
 from agent_smith.sandbox import SandboxSession, load_sandbox_config
+
+logger = get_logger('agent_smith.swebench_agent')
 
 
 MAX_TASK_SECONDS = 900
@@ -49,24 +49,28 @@ class SWEEnvironment:
         self.holder = None
         self.started = False
 
-    def _docker(self, *arguments: str, timeout_seconds: float | None = None) -> str:
-        """Run one docker command, bounded by whatever is left of the deadline."""
+    def _docker(self, *arguments: str,
+                timeout_seconds: float | None = None) -> str:
+        """Run one docker command, bounded by what is left of the deadline."""
         logger.debug("Entrando en SWEEnvironment._docker")
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("No time left for Docker operations.")
         completed = subprocess.run(
-            ["docker", *arguments], text=True, capture_output=True, check=False,
-            timeout=min(remaining, timeout_seconds) if timeout_seconds else remaining,
+            ["docker", *arguments], text=True, capture_output=True,
+            check=False,
+            timeout=(min(remaining, timeout_seconds) if timeout_seconds
+                     else remaining),
         )
         if completed.returncode != 0:
             raise RuntimeError(
-                f"docker {arguments[0]} failed: {completed.stderr.strip() or completed.stdout.strip()}"
+                f"docker {arguments[0]} failed: "
+                f"{completed.stderr.strip() or completed.stdout.strip()}"
             )
         return completed.stdout.strip()
 
     def start(self) -> None:
-        """Make the task image available and run one container holding /testbed."""
+        """Get the task image and run one container holding /testbed."""
         logger.debug("Entrando en SWEEnvironment.start")
         image = self.task.docker_image
         if not image:
@@ -77,41 +81,46 @@ class SWEEnvironment:
         except RuntimeError:
             logger.info("Descargando la imagen de la tarea; puede tardar")
             self._docker("pull", image)
-        # El contenedor se queda vivo leyendo NUESTRA entrada estándar, no con un
-        # `tail -f` suelto. Si el agente muere de cualquier forma, incluido un
-        # kill -9 que ningún finally puede interceptar, el kernel cierra esta
-        # tubería, `cat` ve el fin de entrada, el contenedor para y --rm lo
-        # borra. Sin red y sin privilegios: dentro sólo corren los tests del repo.
+        # El contenedor se queda vivo leyendo NUESTRA entrada estándar, no con
+        # un `tail -f` suelto. Si el agente muere de cualquier forma, incluido
+        # un kill -9 que ningún finally puede interceptar, el kernel cierra
+        # esta tubería, `cat` ve el fin de entrada, el contenedor para y --rm
+        # lo borra. Sin red y sin privilegios: dentro sólo corren los tests
+        # del repo.
         self.holder = subprocess.Popen(
             ["docker", "run", "-i", "--rm", "--name", self.container_id,
              "--network", "none", image, "cat"],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
         self.started = True
         self._wait_until_running()
         logger.info("Contenedor de la tarea arrancado: %s", self.container_id)
-        listing = self._docker("exec", self.container_id, "ls", "/testbed", timeout_seconds=30)
+        listing = self._docker("exec", self.container_id, "ls", "/testbed",
+                               timeout_seconds=30)
         if not listing:
             raise RuntimeError("The container has no /testbed checkout.")
 
     def _wait_until_running(self) -> None:
-        """Wait for the container to report itself running, or explain why not."""
+        """Wait until the container reports it is running, or explain why."""
         logger.debug("Entrando en SWEEnvironment._wait_until_running")
         while time.monotonic() < self.deadline:
             running = subprocess.run(
-                ["docker", "inspect", "-f", "{{.State.Running}}", self.container_id],
+                ["docker", "inspect", "-f", "{{.State.Running}}",
+                 self.container_id],
                 text=True, capture_output=True, check=False, timeout=30,
             )
             if running.stdout.strip() == "true":
                 return
             if self.holder.poll() is not None:
                 _, errors = self.holder.communicate(timeout=10)
-                raise RuntimeError(f"docker run failed: {(errors or '').strip()}")
+                raise RuntimeError(
+                    f"docker run failed: {(errors or '').strip()}")
             time.sleep(0.5)
         raise TimeoutError("The task container did not start in time.")
 
     def mcp_environment(self) -> dict[str, str]:
-        """Return what the MCP server needs to reach this task's own container."""
+        """Return what the MCP server needs to reach this task's container."""
         logger.debug("Entrando en SWEEnvironment.mcp_environment")
         if not self.started:
             raise RuntimeError("The task container is not running.")
@@ -136,22 +145,27 @@ class SWEEnvironment:
             try:
                 self.holder.wait(timeout=CLEANUP_RESERVE_SECONDS // 2)
             except subprocess.TimeoutExpired:
-                logger.warning("El proceso que sostenía el contenedor sigue vivo; se termina")
+                logger.warning("El proceso que sostenía el contenedor sigue "
+                               "vivo; se termina")
                 self.holder.kill()
                 self.holder.wait(timeout=5)
             self.holder = None
         completed = subprocess.run(
             ["docker", "rm", "-f", self.container_id],
-            text=True, capture_output=True, check=False, timeout=CLEANUP_RESERVE_SECONDS,
+            text=True, capture_output=True, check=False,
+            timeout=CLEANUP_RESERVE_SECONDS,
         )
         errors = completed.stderr.strip()
         if completed.returncode != 0 and "No such container" not in errors:
-            raise RuntimeError(f"Could not remove the task container: {errors}")
+            raise RuntimeError(
+                f"Could not remove the task container: {errors}")
 
 
 def build_swebench_system_prompt(mcp_manual: str) -> str:
-    """Build the English SWE-bench instructions around the discovered manual."""
+    """Build the English SWE-bench instructions around the MCP manual."""
     logger.debug("Entrando en build_swebench_system_prompt")
+    # El prompt va tal cual: partir sus líneas cambiaría el texto que recibe
+    # el modelo. Por eso el noqa del final cubre sus líneas largas.
     return '''Fix the reported issue in the repository at /testbed, using
 Thought -> Code -> Observation.
 Write a Thought of at most 40 words and one closed ```python block, then <end_code>.
@@ -187,7 +201,7 @@ Do not look for the official fix, a pull request or a remembered patch: solve
 the issue from what you read in this checkout. Passing the tests you can run
 does not guarantee the hidden tests pass.
 Available MCP manual:
-''' + mcp_manual
+''' + mcp_manual  # noqa: E501
 
 
 def build_swebench_task_prompt(task: SWEBenchTaskInput) -> str:
@@ -217,60 +231,69 @@ def _build_swebench_limits(max_iterations: int) -> AgentLimits:
 async def run_swebench_agent(
     task: SWEBenchTaskInput, args: argparse.Namespace, *, started_at: float,
 ) -> SolutionOutput:
-    """Prepare one testbed, await the shared loop, and preserve the whole patch."""
+    """Prepare one testbed, run the shared loop and keep the whole patch."""
     logger.debug("Entrando en run_swebench_agent")
     logger.info("Preparando recursos de SWE-bench %s", task.instance_id)
     result = SolutionOutput(
-        task_id=task.instance_id, benchmark="swebench", success=False, solution="",
-        iterations=0, total_requests=0, total_input_tokens=0, total_output_tokens=0,
-        total_time_seconds=0,
+        task_id=task.instance_id, benchmark="swebench", success=False,
+        solution="", iterations=0, total_requests=0, total_input_tokens=0,
+        total_output_tokens=0, total_time_seconds=0,
     )
     environment = client = sandbox = None
     try:
         limits = _build_swebench_limits(args.max_iterations)
-        deadline = started_at + limits.max_time_seconds - CLEANUP_RESERVE_SECONDS
+        deadline = (started_at + limits.max_time_seconds
+                    - CLEANUP_RESERVE_SECONDS)
         if time.monotonic() >= deadline:
             raise TimeoutError("Task expired before setup.")
 
         provider = ProviderClient.from_environment(
-            args.provider_url, args.model_name, os.environ.get("AGENT_SMITH_MODELS_CONFIG"),
+            args.provider_url, args.model_name,
+            os.environ.get("AGENT_SMITH_MODELS_CONFIG"),
         )
-        config = load_sandbox_config(os.environ.get("AGENT_SMITH_SANDBOX_CONFIG"))
+        config = load_sandbox_config(
+            os.environ.get("AGENT_SMITH_SANDBOX_CONFIG"))
 
         environment = SWEEnvironment(task, deadline=deadline)
         await anyio.to_thread.run_sync(environment.start)
 
         server_environment = {name: os.environ[name] for name in (
-            "PATH", "HOME", "DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+            "PATH", "HOME", "DOCKER_HOST", "DOCKER_TLS_VERIFY",
+            "DOCKER_CERT_PATH",
         ) if name in os.environ}
         server_environment.update(environment.mcp_environment())
         root = Path(__file__).resolve().parents[1]
         client = MCPClient(
-            stdio_command=[sys.executable, str(root / "mcp_tools_swebench.py")],
+            stdio_command=[sys.executable,
+                           str(root / "mcp_tools_swebench.py")],
             environment=server_environment,
         )
 
         session, manual = await client.start(deadline=deadline)
-        logger.info("MCP listo: %s herramientas descubiertas", len(manual.tools))
+        logger.info("MCP listo: %s herramientas descubiertas",
+                    len(manual.tools))
         advertised = {tool["name"] for tool in manual.tools}
         missing = [name for name in REQUIRED_TOOLS if name not in advertised]
         if missing:
-            raise RuntimeError("The MCP server did not advertise: " + ", ".join(missing))
+            raise RuntimeError("The MCP server did not advertise: "
+                               + ", ".join(missing))
 
         result.system_prompt = build_swebench_system_prompt(manual.as_text())
         sandbox = SandboxSession(config, session, manual)
         with anyio.fail_after(max(0, deadline - time.monotonic())):
             await sandbox.start()
-        logger.info("Trabajador preparado; comenzando Thought -> Code -> Observation")
+        logger.info("Trabajador preparado; comenzando "
+                    "Thought -> Code -> Observation")
         result = await run_agent_loop(
             task_id=task.instance_id, benchmark="swebench",
-            system_prompt=result.system_prompt, task_prompt=build_swebench_task_prompt(task),
-            provider=provider, sandbox=sandbox, limits=limits, started_at=started_at,
-            deadline=deadline,
+            system_prompt=result.system_prompt,
+            task_prompt=build_swebench_task_prompt(task),
+            provider=provider, sandbox=sandbox, limits=limits,
+            started_at=started_at, deadline=deadline,
         )
-        # Un parche real siempre empieza por "diff --git". Comprobar sólo que no
-        # esté vacío no basta: un modelo entregó el aviso "No changes yet." de
-        # get_patch como si fuera su solución y la tarea se daba por buena.
+        # Un parche real siempre empieza por "diff --git". Comprobar sólo que
+        # no esté vacío no basta: un modelo entregó el aviso "No changes yet."
+        # de get_patch como si fuera su solución y la tarea se daba por buena.
         if result.success and "diff --git" not in result.solution:
             result.success = False
             result.error = (
@@ -278,18 +301,21 @@ async def run_swebench_agent(
                 f"changing any file: {result.solution.strip()[:200]!r}"
             )
     except Exception as exc:
-        logger.exception("Fallo del adaptador SWE-bench; iniciando cierre de recursos")
+        logger.exception("Fallo del adaptador SWE-bench; iniciando cierre "
+                         "de recursos")
         result.success = False
         result.error = f"{type(exc).__name__}: {exc}"
     finally:
-        logger.info("Limpieza SWE-bench: cerrando trabajador, MCP y contenedor")
+        logger.info("Limpieza SWE-bench: cerrando trabajador, MCP y "
+                    "contenedor")
         cleanup_errors = []
         for resource in (sandbox, client):
             if resource is not None:
                 try:
                     await resource.close()
                 except Exception as exc:
-                    logger.error("No se pudo cerrar %s: %s", type(resource).__name__, exc)
+                    logger.error("No se pudo cerrar %s: %s",
+                                 type(resource).__name__, exc)
                     cleanup_errors.append(f"{type(resource).__name__}: {exc}")
         if environment is not None:
             try:
@@ -302,11 +328,14 @@ async def run_swebench_agent(
                 cleanup_errors.append(f"Docker cleanup: {exc}")
         result.total_time_seconds = time.monotonic() - started_at
         if result.total_time_seconds > MAX_TASK_SECONDS:
-            cleanup_errors.append(f"Total task time exceeded {MAX_TASK_SECONDS} seconds.")
+            cleanup_errors.append(
+                f"Total task time exceeded {MAX_TASK_SECONDS} seconds.")
         if cleanup_errors:
             result.success = False
-            result.error = "\n".join(filter(None, [result.error, *cleanup_errors]))
-        logger.info("Fin SWE-bench: success=%s, tiempo total=%.3fs", result.success, result.total_time_seconds)
+            result.error = "\n".join(
+                filter(None, [result.error, *cleanup_errors]))
+        logger.info("Fin SWE-bench: success=%s, tiempo total=%.3fs",
+                    result.success, result.total_time_seconds)
         if result.error:
             logger.error("Motivo del fallo SWE-bench: %s", result.error)
     return result

@@ -2,13 +2,13 @@
 
 from agent_smith.logging_config import get_logger
 
-logger = get_logger('agent_smith.io')
-
 import json
 from pathlib import Path
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
+
+logger = get_logger('agent_smith.io')
 
 
 ModelType = TypeVar("ModelType", bound=BaseModel)
@@ -56,7 +56,8 @@ def load_model(
         logger.debug("Validación %s correcta", model_class.__name__)
         return model
     except ValidationError as exc:
-        logger.error("Datos incompatibles con %s: %s", model_class.__name__, path)
+        logger.error("Datos incompatibles con %s: %s",
+                     model_class.__name__, path)
         raise RuntimeError(
             f"Invalid {model_class.__name__} in {path}: {exc}"
         ) from exc
@@ -75,7 +76,9 @@ def write_model(path: str | Path, model: BaseModel) -> None:
             encoding="utf-8",
         )
     except OSError as exc:
-        logger.error("Fallo de escritura %s: %s", file_path, type(exc).__name__)
-        raise RuntimeError(f"Could not write output file: {file_path}: {exc}") \
-             from exc
+        logger.error("Fallo de escritura %s: %s",
+                     file_path, type(exc).__name__)
+        raise RuntimeError(
+            f"Could not write output file: {file_path}: {exc}"
+        ) from exc
     logger.debug("Archivo de resultado escrito correctamente: %s", file_path)

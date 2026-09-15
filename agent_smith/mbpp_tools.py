@@ -2,8 +2,6 @@
 
 from agent_smith.logging_config import get_logger
 
-logger = get_logger('agent_smith.mbpp_tools')
-
 import os
 import time
 import uuid
@@ -11,6 +9,8 @@ from typing import Any
 
 import docker
 from docker.errors import DockerException, ImageNotFound, NotFound
+
+logger = get_logger('agent_smith.mbpp_tools')
 
 
 DEFAULT_DOCKER_IMAGE = "python:3.10.12-slim"
@@ -25,7 +25,9 @@ def build_test_program(
 ) -> str:
     """Combine a candidate solution with the public MBPP tests."""
     logger.debug("Entrando en build_test_program")
-    logger.debug("Preparando programa de tests: imports=%s, aserciones=%s, código=%s caracteres", len(test_imports), len(test_list), len(code))
+    logger.debug("Preparando programa de tests: imports=%s, aserciones=%s, "
+                 "código=%s caracteres",
+                 len(test_imports), len(test_list), len(code))
 
     sections = []
     sections.extend(item.strip() for item in test_imports if item.strip())
@@ -55,9 +57,10 @@ def run_mbpp_tests(
     test_list: list[str],
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Run tests in an owned container, with a task deadline and bounded cleanup."""
+    """Run tests in an owned container with a deadline and bounded cleanup."""
     logger.debug("Entrando en run_mbpp_tests")
-    logger.info("Tests MBPP solicitados: %s aserciones, timeout=%ss", len(test_list), timeout_seconds)
+    logger.info("Tests MBPP solicitados: %s aserciones, timeout=%ss",
+                len(test_list), timeout_seconds)
     if not code.strip():
         logger.warning("No se ejecutarán tests: candidato vacío")
         return {
@@ -91,10 +94,12 @@ def run_mbpp_tests(
             60.0 if deadline is None else deadline - time.monotonic() - 2
         )
         if remaining <= 0:
-            raise TimeoutError("Task deadline reached before Docker operation.")
+            raise TimeoutError(
+                "Task deadline reached before Docker operation.")
         if client is not None:
             client.api.timeout = min(remaining, 5.0)
-        logger.debug("Plazo Docker: %.3fs restantes; operación de limpieza=%s", remaining, cleanup)
+        logger.debug("Plazo Docker: %.3fs restantes; operación de "
+                     "limpieza=%s", remaining, cleanup)
         return remaining
 
     try:
@@ -104,13 +109,16 @@ def run_mbpp_tests(
         logger.debug("Conectando al daemon Docker")
         client = docker.from_env(timeout=min(remaining, 5.0))
         set_timeout()
-        logger.info("Creando contenedor %s con imagen %s", container_name, DEFAULT_DOCKER_IMAGE)
-        logger.debug("DOCKER ENTRADA [%s]: python -u -c; programa completo:\n%s", container_name, program)
+        logger.info("Creando contenedor %s con imagen %s",
+                    container_name, DEFAULT_DOCKER_IMAGE)
+        logger.debug("DOCKER ENTRADA [%s]: python -u -c; programa "
+                     "completo:\n%s", container_name, program)
         container = client.containers.create(
             DEFAULT_DOCKER_IMAGE,
             command=["python", "-u", "-c", program],
             name=container_name,
-            labels={"agent-smith.mbpp.session": os.environ.get("AGENT_SMITH_MBPP_SESSION", "standalone")},
+            labels={"agent-smith.mbpp.session": os.environ.get(
+                "AGENT_SMITH_MBPP_SESSION", "standalone")},
             network_disabled=True,
             mem_limit="128m",
             cpu_period=100_000,
@@ -125,7 +133,8 @@ def run_mbpp_tests(
         remaining = set_timeout()
         wait_result = container.wait(timeout=min(timeout_seconds, remaining))
         exit_code = int(wait_result.get("StatusCode", 1))
-        logger.debug("Proceso de tests terminado: exit_code=%s; leyendo logs Docker", exit_code)
+        logger.debug("Proceso de tests terminado: exit_code=%s; leyendo "
+                     "logs Docker", exit_code)
 
         set_timeout()
         output = container.logs(stdout=True, stderr=True).decode(
@@ -156,7 +165,8 @@ def run_mbpp_tests(
             }
 
     except ImageNotFound:
-        logger.error("No está disponible la imagen Docker %s", DEFAULT_DOCKER_IMAGE)
+        logger.error("No está disponible la imagen Docker %s",
+                     DEFAULT_DOCKER_IMAGE)
         result = {
             "success": False,
             "message": "Public tests could not start.",
@@ -167,8 +177,10 @@ def run_mbpp_tests(
             "exit_code": None,
         }
     except Exception as exc:
-        logger.error("Los tests Docker no pudieron completarse: %s", type(exc).__name__)
-        logger.debug("DOCKER ERROR [%s]: %s: %s", container_name, type(exc).__name__, exc)
+        logger.error("Los tests Docker no pudieron completarse: %s",
+                     type(exc).__name__)
+        logger.debug("DOCKER ERROR [%s]: %s: %s",
+                     container_name, type(exc).__name__, exc)
         text = str(exc)
         if started and (
             isinstance(exc, TimeoutError)
@@ -176,23 +188,28 @@ def run_mbpp_tests(
         ):
             output = f"Execution timed out after {timeout_seconds} seconds."
         else:
-            kind = "Docker" if isinstance(exc, DockerException) else "Execution"
+            kind = ("Docker" if isinstance(exc, DockerException)
+                    else "Execution")
             output = f"{kind} error: {text}"
 
         if started:
             try:
-                logger.debug("Intentando recuperar salida parcial del contenedor")
+                logger.debug("Intentando recuperar salida parcial del "
+                             "contenedor")
                 set_timeout(cleanup=True)
                 partial = container.logs(stdout=True, stderr=True).decode(
                     "utf-8", errors="replace"
                 )
                 logger.debug(
-                    "DOCKER SALIDA PARCIAL [%s, stdout/stderr combinados]:\n%s",
+                    "DOCKER SALIDA PARCIAL [%s, stdout/stderr "
+                    "combinados]:\n%s",
                     container_name, partial or "[sin salida]",
                 )
-                output += "\nOutput is partial:\n" + truncate_output(partial.strip())
+                output += ("\nOutput is partial:\n"
+                           + truncate_output(partial.strip()))
             except Exception as log_error:
-                logger.warning("No se pudo recuperar la salida parcial: %s", type(log_error).__name__)
+                logger.warning("No se pudo recuperar la salida parcial: %s",
+                               type(log_error).__name__)
                 output += f"\nCould not read partial output: {log_error}"
 
         result = {
@@ -210,59 +227,68 @@ def run_mbpp_tests(
         if container is None and client is not None:
             # Creation can reach Docker even if its HTTP response is lost.
             try:
-                logger.debug("Comprobando si Docker llegó a crear el contenedor pese al fallo")
+                logger.debug("Comprobando si Docker llegó a crear el "
+                             "contenedor pese al fallo")
                 set_timeout(cleanup=True)
                 container = client.containers.get(container_name)
             except NotFound:
                 pass
             except Exception as exc:
-                cleanup_errors.append(f"Could not check container creation: {exc}")
+                cleanup_errors.append(
+                    f"Could not check container creation: {exc}")
         if container is not None:
             try:
                 logger.debug("Parando contenedor %s", container_name)
                 set_timeout(cleanup=True)
                 container.stop(timeout=1)
             except Exception as exc:
-                cleanup_errors.append(f"Could not stop the test container: {exc}")
+                cleanup_errors.append(
+                    f"Could not stop the test container: {exc}")
             try:
                 logger.debug("Eliminando contenedor %s", container_name)
                 set_timeout(cleanup=True)
                 container.remove(force=True)
                 logger.info("Contenedor de tests eliminado")
             except Exception as exc:
-                cleanup_errors.append(f"Could not remove the test container: {exc}")
+                cleanup_errors.append(
+                    f"Could not remove the test container: {exc}")
 
         if client is not None:
             try:
                 client.close()
                 logger.debug("Cliente Docker cerrado")
             except Exception as exc:
-                cleanup_errors.append(f"Could not close the Docker client: {exc}")
+                cleanup_errors.append(
+                    f"Could not close the Docker client: {exc}")
 
         if cleanup_errors:
             cleanup_message = "Cleanup failed:\n" + "\n".join(cleanup_errors)
             logger.error("Limpieza Docker incompleta: %s", cleanup_message)
             if result is None:
                 # Keep KeyboardInterrupt/SystemExit propagating after cleanup.
-                logger.error("Se propaga la interrupción después de intentar limpiar")
+                logger.error("Se propaga la interrupción después de "
+                             "intentar limpiar")
             else:
                 result["success"] = False
                 result["message"] += " Cleanup failed."
                 result["output"] += "\n" + cleanup_message
 
-    logger.debug("Resultado de run_mbpp_tests: success=%s, exit_code=%s", result["success"], result["exit_code"])
+    logger.debug("Resultado de run_mbpp_tests: success=%s, exit_code=%s",
+                 result["success"], result["exit_code"])
     return result
 
 
 def cleanup_mbpp_containers(session_id: str) -> None:
-    """Remove this task's containers after MCP closes, including cancellation."""
+    """Remove this task's containers after MCP closes, even on cancellation."""
     logger.debug("Entrando en cleanup_mbpp_containers")
-    logger.debug("Comprobando contenedores restantes con la etiqueta de esta tarea")
+    logger.debug("Comprobando contenedores restantes con la etiqueta de "
+                 "esta tarea")
     client = docker.from_env(timeout=2)
     errors = []
     try:
         for container in client.containers.list(
-            all=True, filters={"label": f"agent-smith.mbpp.session={session_id}"},
+            all=True,
+            filters={"label": f"agent-smith.mbpp.session={session_id}"},
         ):
             try:
                 container.remove(force=True)
@@ -270,7 +296,8 @@ def cleanup_mbpp_containers(session_id: str) -> None:
             except NotFound:
                 pass
             except Exception as exc:
-                logger.error("No se pudo eliminar un contenedor restante: %s", type(exc).__name__)
+                logger.error("No se pudo eliminar un contenedor restante: "
+                             "%s", type(exc).__name__)
                 errors.append(str(exc))
     finally:
         client.close()

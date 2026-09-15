@@ -2,21 +2,22 @@
 
 from agent_smith.logging_config import get_logger
 
-logger = get_logger('agent_smith.code_extraction')
-
 import ast
 import json
 import re
+
+logger = get_logger('agent_smith.code_extraction')
 
 
 def extract_python_code(llm_output: str) -> tuple[str, str]:
     """Return Python source and extraction feedback without executing it.
 
-    Accept a closed python or py fenced block and check its body with ast.parse.
-    Empty responses, missing blocks, missing closing fences, and invalid syntax
-    return empty source with a diagnostic. Valid source has empty feedback.
-    Raw Python and unlabelled blocks are unsupported; malformed blocks are not
-    repaired. An optional <end_code> marker belongs after the closing fence.
+    Accept a closed python or py fenced block and check its body with
+    ast.parse. Empty responses, missing blocks, missing closing fences, and
+    invalid syntax return empty source with a diagnostic. Valid source has
+    empty feedback. Raw Python and unlabelled blocks are unsupported;
+    malformed blocks are not repaired. An optional <end_code> marker belongs
+    after the closing fence.
     """
     logger.debug("Entrando en extract_python_code")
 
@@ -42,16 +43,20 @@ def extract_python_code(llm_output: str) -> tuple[str, str]:
         if (code_ends != -1):
             code = llm_output[code_starts:code_ends].strip()
         else:
-            logger.warning("Bloque Python incompleto: falta el cierre; no se ejecutará")
-            return "", "Python code block is missing its closing fence; not executed."
+            logger.warning("Bloque Python incompleto: falta el cierre; "
+                           "no se ejecutará")
+            return "", ("Python code block is missing its closing fence; "
+                        "not executed.")
 
     if code != "":
         try:
             ast.parse(code)
             feedback = ""
-            logger.debug("Bloque Python completo y sintaxis válida: %s caracteres", len(code))
+            logger.debug("Bloque Python completo y sintaxis válida: "
+                         "%s caracteres", len(code))
         except SyntaxError as exc:
-            logger.warning("Sintaxis Python inválida en línea %s: %s", exc.lineno, exc.msg)
+            logger.warning("Sintaxis Python inválida en línea %s: %s",
+                           exc.lineno, exc.msg)
             code = ""
             feedback = f"Python syntax error on line {exc.lineno}: {exc.msg}"
 
@@ -61,7 +66,7 @@ def extract_python_code(llm_output: str) -> tuple[str, str]:
 
 
 def _literal(value: str) -> str:
-    """Render an argument value as a Python literal, keeping integers integers."""
+    """Render an argument value as a Python literal; integers stay integers."""
     logger.debug("Entrando en _literal")
     text = value.strip()
     if re.fullmatch(r"-?\d+", text):
@@ -97,10 +102,12 @@ def convert_tool_calls(llm_output: str) -> str:
         for chunk in re.split(r"<arg_key>", body)[1:]:
             key, separator, rest = chunk.partition("</arg_key>")
             if not separator:
-                raise ValueError(f"Tool call {name} has an argument name that is never closed.")
+                raise ValueError(f"Tool call {name} has an argument name "
+                                 "that is never closed.")
             key = key.strip()
             if not key.isidentifier():
-                raise ValueError(f"Tool call {name} has an unusable argument name: {key!r}")
+                raise ValueError(f"Tool call {name} has an unusable "
+                                 f"argument name: {key!r}")
 
             opened = "<arg_value>" in rest
             value = rest.split("<arg_value>", 1)[1] if opened else rest
@@ -108,7 +115,8 @@ def convert_tool_calls(llm_output: str) -> str:
             if closed:
                 value = value.rsplit("</arg_value>", 1)[0]
             if not (opened and closed):
-                # Falta un marcador: los saltos que lo rodeaban no son del valor.
+                # Falta un marcador: los saltos que lo rodeaban no son del
+                # valor.
                 value = value.strip()
             arguments.append(f"{key}={_literal(value)}")
 
@@ -121,14 +129,15 @@ def convert_tool_calls(llm_output: str) -> str:
 def convert_tool_use(llm_output: str) -> str:
     """Convert <tool_use> blocks with JSON arguments into Python calls.
 
-    Un tercer dialecto observado en vivo. En esa ejecución el modelo diagnosticó
-    bien el bug y escribió la edición correcta, pero en este formato, y no se
-    ejecutó nada en 23 de 29 iteraciones. El nombre del servidor se ignora: la
-    herramienta ya es una función local del sandbox.
+    Un tercer dialecto observado en vivo. En esa ejecución el modelo
+    diagnosticó bien el bug y escribió la edición correcta, pero en este
+    formato, y no se ejecutó nada en 23 de 29 iteraciones. El nombre del
+    servidor se ignora: la herramienta ya es una función local del sandbox.
     """
     logger.debug("Entrando en convert_tool_use")
     statements = []
-    for block in re.findall(r"<tool_use>(.*?)</tool_use>", llm_output, re.DOTALL):
+    for block in re.findall(r"<tool_use>(.*?)</tool_use>", llm_output,
+                            re.DOTALL):
         found = re.search(r"<tool_name>(.*?)</tool_name>", block, re.DOTALL)
         name = found.group(1).strip() if found else ""
         if not name.isidentifier():
@@ -136,16 +145,20 @@ def convert_tool_use(llm_output: str) -> str:
 
         found = re.search(r"<arguments>(.*?)</arguments>", block, re.DOTALL)
         try:
-            arguments = json.loads(found.group(1).strip() or "{}") if found else {}
+            arguments = (json.loads(found.group(1).strip() or "{}")
+                         if found else {})
         except ValueError as exc:
-            raise ValueError(f"Tool use {name} has invalid JSON arguments: {exc}")
+            raise ValueError(
+                f"Tool use {name} has invalid JSON arguments: {exc}")
         if not isinstance(arguments, dict):
-            raise ValueError(f"Tool use {name} did not pass an object of arguments.")
+            raise ValueError(
+                f"Tool use {name} did not pass an object of arguments.")
 
         rendered = []
         for key, value in arguments.items():
             if not key.isidentifier():
-                raise ValueError(f"Tool use {name} has an unusable argument name: {key!r}")
+                raise ValueError(f"Tool use {name} has an unusable "
+                                 f"argument name: {key!r}")
             rendered.append(f"{key}={value!r}")
 
         logger.info("Convertida una llamada en formato tool_use: %s", name)
@@ -155,7 +168,8 @@ def convert_tool_use(llm_output: str) -> str:
 
 
 CONVERTED_TOOL_CALL_FEEDBACK = (
-    "No ```python block was found; the tool call was converted to Python and executed."
+    "No ```python block was found; the tool call was converted to Python "
+    "and executed."
 )
 
 
@@ -173,6 +187,7 @@ def extract_agent_code(llm_output: str) -> tuple[str, str]:
             logger.warning("Llamada de herramienta malformada: %s", exc)
             return "", f"Malformed tool call: {exc}"
         if converted:
-            # La hoja exige avisar cuando un bloque mal formado se interpreta igual.
+            # La hoja exige avisar cuando un bloque mal formado se
+            # interpreta igual.
             return converted, CONVERTED_TOOL_CALL_FEEDBACK
     return code, feedback

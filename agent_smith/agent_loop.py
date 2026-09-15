@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from agent_smith.logging_config import get_logger
 
-logger = get_logger('agent_smith.agent_loop')
-
 import time
 
 from agent_smith.code_extraction import extract_agent_code
@@ -13,25 +11,30 @@ from agent_smith.models import AgentLimits, SolutionOutput, StepMetrics
 from agent_smith.providers import ProviderClient
 from agent_smith.sandbox import SandboxExecution, SandboxSession
 
+logger = get_logger('agent_smith.agent_loop')
+
 
 MINIMUM_HISTORY_MESSAGES = 6
 
 
 def _message_tokens(message: dict[str, str]) -> int:
-    """Approximate one message the same way the provider estimates a request."""
+    """Approximate one message as the provider estimates a request."""
     return (len(message["content"].encode("utf-8")) + 3) // 4 + 8
 
 
-def trim_history(messages: list[dict[str, str]], budget_tokens: int) -> list[dict[str, str]]:
+def trim_history(
+    messages: list[dict[str, str]], budget_tokens: int,
+) -> list[dict[str, str]]:
     """Keep the system prompt, the task, and as many recent exchanges as fit.
 
     La lista entera se reenvía en cada petición, así que conservarla completa
-    crece de forma cuadrática: una ejecución gastó 296.410 de sus 300.000 tokens
-    de entrada. Una ventana fija tampoco sirve: con tres parejas el modelo dejó
-    de recordar que ya había editado un archivo y releyó lo mismo 22 veces.
-    Por eso el tamaño lo decide el presupuesto que queda repartido entre las
-    iteraciones que quedan. Siempre se mandan MINIMUM_HISTORY_MESSAGES aunque no
-    quepan: sin los últimos intercambios el modelo no puede continuar.
+    crece de forma cuadrática: una ejecución gastó 296.410 de sus 300.000
+    tokens de entrada. Una ventana fija tampoco sirve: con tres parejas el
+    modelo dejó de recordar que ya había editado un archivo y releyó lo mismo
+    22 veces. Por eso el tamaño lo decide el presupuesto que queda repartido
+    entre las iteraciones que quedan. Siempre se mandan
+    MINIMUM_HISTORY_MESSAGES aunque no quepan: sin los últimos intercambios
+    el modelo no puede continuar.
     """
     logger.debug("Entrando en trim_history")
     head, rest = messages[:2], messages[2:]
@@ -106,7 +109,8 @@ async def run_agent_loop(
     logger.debug("Prompt del sistema:\n%s", system_prompt)
     logger.debug("Prompt de la tarea:\n%s", task_prompt)
     task_deadline = started_at + limits.max_time_seconds
-    deadline = min(deadline, task_deadline) if deadline is not None else task_deadline
+    deadline = (min(deadline, task_deadline) if deadline is not None
+                else task_deadline)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": task_prompt},
@@ -120,18 +124,23 @@ async def run_agent_loop(
     try:
         for number in range(1, limits.max_iterations + 1):
             logger.info(
-                "Iteración %s/%s; tokens restantes entrada=%s/salida=%s; tiempo restante=%.2fs",
-                number, limits.max_iterations, limits.max_input_tokens - input_tokens,
-                limits.max_output_tokens - output_tokens, deadline - time.monotonic(),
+                "Iteración %s/%s; tokens restantes entrada=%s/salida=%s; "
+                "tiempo restante=%.2fs",
+                number, limits.max_iterations,
+                limits.max_input_tokens - input_tokens,
+                limits.max_output_tokens - output_tokens,
+                deadline - time.monotonic(),
             )
             if time.monotonic() >= deadline:
                 error = "Task execution deadline reached."
                 break
-            if input_tokens >= limits.max_input_tokens or output_tokens >= limits.max_output_tokens:
+            if (input_tokens >= limits.max_input_tokens
+                    or output_tokens >= limits.max_output_tokens):
                 error = "Task token budget exhausted."
                 break
             # Reparto lo que queda de entrada entre las iteraciones que faltan.
-            share = (limits.max_input_tokens - input_tokens) // (limits.max_iterations - number + 1)
+            share = ((limits.max_input_tokens - input_tokens)
+                     // (limits.max_iterations - number + 1))
             completion = await provider.complete(
                 trim_history(messages, share),
                 max_input_tokens=limits.max_input_tokens - input_tokens,
@@ -142,8 +151,10 @@ async def run_agent_loop(
             input_tokens += completion.input_tokens
             output_tokens += completion.output_tokens
             logger.debug(
-                "Acumulados tras LLM: peticiones=%s, entrada=%s, salida=%s, usage completo=%s",
-                requests, input_tokens, output_tokens, completion.usage_complete,
+                "Acumulados tras LLM: peticiones=%s, entrada=%s, salida=%s, "
+                "usage completo=%s",
+                requests, input_tokens, output_tokens,
+                completion.usage_complete,
             )
             logger.debug("Respuesta del modelo:\n%s", completion.text)
             if completion.request_count == 0:
@@ -158,42 +169,56 @@ async def run_agent_loop(
             )
             steps.append(step)
             error = completion.error
-            if not completion.usage_complete and "known subtotals" not in (error or ""):
-                error = (error or "") + " Token totals are known subtotals only."
-            if input_tokens > limits.max_input_tokens or output_tokens > limits.max_output_tokens:
+            if (not completion.usage_complete
+                    and "known subtotals" not in (error or "")):
+                error = ((error or "")
+                         + " Token totals are known subtotals only.")
+            if (input_tokens > limits.max_input_tokens
+                    or output_tokens > limits.max_output_tokens):
                 error = "Cumulative token limit exceeded."
             if time.monotonic() >= deadline:
-                error = (error + " " if error else "") + "Task execution deadline reached."
+                error = ((error + " " if error else "")
+                         + "Task execution deadline reached.")
             if error and not completion.recoverable:
-                logger.error("Iteración %s detenida antes de ejecutar código: %s", number, error)
+                logger.error("Iteración %s detenida antes de ejecutar "
+                             "código: %s", number, error)
                 step.sandbox_output = error
                 break
             if error:
-                # El modelo no dijo nada utilizable, pero su consumo esta medido:
-                # se le devuelve como observacion en vez de terminar la tarea.
-                logger.warning("Iteración %s sin respuesta utilizable: %s", number, error)
+                # El modelo no dijo nada utilizable, pero su consumo esta
+                # medido: se le devuelve como observacion en vez de terminar
+                # la tarea.
+                logger.warning("Iteración %s sin respuesta utilizable: %s",
+                               number, error)
                 step.sandbox_output = error
-                messages.append({"role": "user", "content": "Observation:\n" + error})
+                messages.append({"role": "user",
+                                 "content": "Observation:\n" + error})
                 continue
             code, feedback = extract_agent_code(completion.text)
             execution = None
             if code:
-                logger.info("Iteración %s: ejecutando el bloque Python extraído", number)
+                logger.info("Iteración %s: ejecutando el bloque Python "
+                            "extraído", number)
                 logger.debug("Código que se ejecutará:\n%s", code)
                 step.sandbox_input = code
                 execution = await sandbox.execute(code, deadline=deadline)
             else:
-                logger.warning("Iteración %s sin código ejecutable: %s", number, feedback)
+                logger.warning("Iteración %s sin código ejecutable: %s",
+                               number, feedback)
                 feedback += (
-                    "\nNothing was executed. Resend all code in one complete, concise "
-                    "Python block; do not describe the delimiters."
+                    "\nNothing was executed. Resend all code in one "
+                    "complete, concise Python block; do not describe the "
+                    "delimiters."
                 )
             observation = build_observation(execution, feedback)
-            logger.debug("Observación real de la iteración %s:\n%s", number, observation)
+            logger.debug("Observación real de la iteración %s:\n%s",
+                         number, observation)
             step.sandbox_output = observation
             messages.append({"role": "assistant", "content": completion.text})
-            messages.append({"role": "user", "content": "Observation:\n" + observation})
-            logger.debug("Observación añadida al historial; mensajes=%s", len(messages))
+            messages.append({"role": "user",
+                             "content": "Observation:\n" + observation})
+            logger.debug("Observación añadida al historial; mensajes=%s",
+                         len(messages))
             if execution is not None and execution.final_answer is not None:
                 solution = execution.final_answer
             if time.monotonic() > deadline:
@@ -210,24 +235,29 @@ async def run_agent_loop(
                         error = "The final answer is empty."
                     else:
                         success = True
-                        logger.info("final_answer recibido; el bucle ha finalizado con una solución")
+                        logger.info("final_answer recibido; el bucle ha "
+                                    "finalizado con una solución")
                     break
         else:
             error = "Iteration limit reached without final_answer."
     except Exception as exc:
-        logger.exception("Fallo inesperado del bucle; se conservarán los pasos parciales")
+        logger.exception("Fallo inesperado del bucle; se conservarán los "
+                         "pasos parciales")
         error = f"{type(exc).__name__}: {exc}"
         if step is not None:
             step.sandbox_output += "\nError: " + error
     if error:
         logger.error("Bucle terminado sin éxito: %s", error)
     logger.info(
-        "Fin del bucle: success=%s, iteraciones=%s, peticiones=%s, tokens=%s/%s",
+        "Fin del bucle: success=%s, iteraciones=%s, peticiones=%s, "
+        "tokens=%s/%s",
         success, len(steps), requests, input_tokens, output_tokens,
     )
     return SolutionOutput(
-        task_id=task_id, benchmark=benchmark, success=success, solution=solution,
-        system_prompt=system_prompt, iterations=len(steps), total_requests=requests,
+        task_id=task_id, benchmark=benchmark, success=success,
+        solution=solution, system_prompt=system_prompt,
+        iterations=len(steps), total_requests=requests,
         total_input_tokens=input_tokens, total_output_tokens=output_tokens,
-        total_time_seconds=time.monotonic() - started_at, steps=steps, error=error,
+        total_time_seconds=time.monotonic() - started_at, steps=steps,
+        error=error,
     )

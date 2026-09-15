@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-from agent_smith.logging_config import configure_logging, get_logger
-
-logger = get_logger('json_worker')
-from typing import Any, Callable, TextIO
-from agent_smith.models import SandboxConfig
 import ast
 import json
 import keyword
 import sys
 from contextlib import redirect_stderr, redirect_stdout
+from typing import Any, Callable, TextIO
 
+from agent_smith.logging_config import configure_logging, get_logger
+from agent_smith.models import SandboxConfig
 from agent_smith.sandbox import (
     FinalAnswerSignal, _apply_worker_limits, _make_safe_builtins, final_answer,
 )
+
+logger = get_logger('json_worker')
 
 
 class WorkerProtocolError(BaseException):
@@ -72,7 +72,8 @@ class WorkerOutput:
     def write(self, text: str) -> int:
         """Send the allowed text and report truncation once."""
         logger.debug("Entrando en WorkerOutput.write")
-        logger.debug("Salida del código: %s caracteres recibidos; %s enviados previamente", len(text), self.sent)
+        logger.debug("Salida del código: %s caracteres recibidos; "
+                     "%s enviados previamente", len(text), self.sent)
         remaining = self.max_characters - self.sent
         chunk = text[:remaining]
 
@@ -83,7 +84,8 @@ class WorkerOutput:
         omitted = len(text) - len(chunk)
         if omitted > 0:
             if self.omitted == 0:
-                logger.warning("Salida del bloque truncada al alcanzar %s caracteres", self.max_characters)
+                logger.warning("Salida del bloque truncada al alcanzar "
+                               "%s caracteres", self.max_characters)
                 _send_message(self.stream, {"type": "truncated"})
             self.omitted += omitted
 
@@ -99,13 +101,14 @@ class WorkerOutput:
                 f"Could not flush output: {exc}"
             ) from exc
 
+
 def _request_mcp(
     input_stream: TextIO,
     output_stream: TextIO,
     operation: str,
     arguments: dict[str, Any],
 ) -> Any:
-    """Request one MCP operation from the supervisor and wait for its JSON reply."""
+    """Request one MCP operation from the supervisor and wait for its reply."""
     logger.debug("Entrando en _request_mcp")
     logger.info("Solicitando operación MCP %s al supervisor", operation)
     _send_message(output_stream, {
@@ -115,7 +118,8 @@ def _request_mcp(
     if reply is None or reply["type"] != "mcp_result":
         raise WorkerProtocolError("Expected mcp_result.")
     if reply.get("error") is not None:
-        logger.warning("La operación MCP devolvió un error; se entregará al código")
+        logger.warning("La operación MCP devolvió un error; "
+                       "se entregará al código")
         raise RuntimeError(reply["error"])
     if "result" not in reply:
         raise WorkerProtocolError("MCP reply is missing result.")
@@ -128,7 +132,7 @@ def _make_tool_wrapper(
     input_stream: TextIO,
     output_stream: TextIO,
 ) -> Callable[..., Any]:
-    """Describe a local Python wrapper for one dynamically discovered MCP tool."""
+    """Describe a local Python wrapper for one discovered MCP tool."""
     logger.debug("Entrando en _make_tool_wrapper")
     name = tool["name"]
     parameters = list(tool.get("inputSchema", {}).get("properties", {}))
@@ -155,24 +159,27 @@ def _build_namespace(
     input_stream: TextIO,
     output_stream: TextIO,
 ) -> dict[str, Any]:
-    """Prepare persistent user globals with restricted builtins and MCP wrappers."""
+    """Prepare persistent user globals with safe builtins and MCP wrappers."""
     logger.debug("Entrando en _build_namespace")
     safe = _make_safe_builtins(config)
 
     def mcp_call_tool(name, arguments=None):
         logger.debug("Entrando en _build_namespace.mcp_call_tool")
         return _request_mcp(input_stream, output_stream, "call_tool", {
-            "name": name, "arguments": arguments if arguments is not None else {},
+            "name": name,
+            "arguments": arguments if arguments is not None else {},
         })
 
     def read_resource(uri):
         logger.debug("Entrando en _build_namespace.read_resource")
-        return _request_mcp(input_stream, output_stream, "read_resource", {"uri": uri})
+        return _request_mcp(input_stream, output_stream, "read_resource",
+                            {"uri": uri})
 
     def get_prompt(name, arguments=None):
         logger.debug("Entrando en _build_namespace.get_prompt")
         return _request_mcp(input_stream, output_stream, "get_prompt", {
-            "name": name, "arguments": arguments if arguments is not None else {},
+            "name": name,
+            "arguments": arguments if arguments is not None else {},
         })
 
     namespace = {
@@ -184,11 +191,14 @@ def _build_namespace(
         name = tool["name"]
         if (name.isidentifier() and not keyword.iskeyword(name)
                 and name not in safe and name not in namespace):
-            namespace[name] = _make_tool_wrapper(tool, input_stream, output_stream)
+            namespace[name] = _make_tool_wrapper(tool, input_stream,
+                                                 output_stream)
             logger.debug("Función local MCP registrada: %s", name)
         else:
-            logger.debug("Herramienta %s disponible mediante mcp_call_tool; nombre reservado o no válido", name)
-    logger.debug("Namespace persistente preparado; entradas=%s", len(namespace))
+            logger.debug("Herramienta %s disponible mediante mcp_call_tool; "
+                         "nombre reservado o no válido", name)
+    logger.debug("Namespace persistente preparado; entradas=%s",
+                 len(namespace))
     return namespace
 
 
@@ -199,7 +209,8 @@ def execute_block(
 ) -> None:
     """Execute code in the shared namespace and send its result."""
     logger.debug("Entrando en execute_block")
-    logger.info("Ejecutando bloque Python en el namespace persistente: %s caracteres", len(code))
+    logger.info("Ejecutando bloque Python en el namespace persistente: "
+                "%s caracteres", len(code))
     output = WorkerOutput(output_stream)
     answer = None
     error = None
@@ -207,16 +218,18 @@ def execute_block(
     try:
         with redirect_stdout(output), redirect_stderr(output):
             parsed = ast.parse(code)
-            # Como en el REPL de Python: si el bloque termina en una expresión,
-            # mostrar su valor. Los modelos llaman a las herramientas sin print,
-            # y sin esto la observación llegaba vacía y se quedaban en bucle.
+            # Como en el REPL de Python: si el bloque termina en una
+            # expresión, mostrar su valor. Los modelos llaman a las
+            # herramientas sin print, y sin esto la observación llegaba
+            # vacía y se quedaban en bucle.
             trailing = None
             if parsed.body and isinstance(parsed.body[-1], ast.Expr):
                 trailing = parsed.body.pop().value
             exec(compile(parsed, "<sandbox>", "exec"), namespace, namespace)
             if trailing is not None:
                 value = eval(
-                    compile(ast.Expression(trailing), "<sandbox>", "eval"), namespace, namespace,
+                    compile(ast.Expression(trailing), "<sandbox>", "eval"),
+                    namespace, namespace,
                 )
                 if value is not None:
                     print(value)
@@ -226,7 +239,8 @@ def execute_block(
         logger.info("final_answer capturado: %s caracteres", len(answer))
 
     except (KeyboardInterrupt, SystemExit) as exc:
-        logger.warning("El bloque pidió terminar el trabajador: %s", type(exc).__name__)
+        logger.warning("El bloque pidió terminar el trabajador: %s",
+                       type(exc).__name__)
         _send_message(output_stream, {
             "type": "control_exit",
             "exception": type(exc).__name__,
@@ -236,7 +250,8 @@ def execute_block(
 
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
-        logger.warning("Bloque Python fallido: %s; se enviará una observación", type(exc).__name__)
+        logger.warning("Bloque Python fallido: %s; se enviará una "
+                       "observación", type(exc).__name__)
 
     _send_message(output_stream, {
         "type": "done",
@@ -245,13 +260,17 @@ def execute_block(
         "truncated": output.omitted > 0,
         "omitted": output.omitted,
     })
-    logger.info("Bloque terminado: error=%s, respuesta final=%s, caracteres omitidos=%s", error is not None, answer is not None, output.omitted)
+    logger.info("Bloque terminado: error=%s, respuesta final=%s, "
+                "caracteres omitidos=%s",
+                error is not None, answer is not None, output.omitted)
+
 
 def main() -> int:
-    """Initialize once and consume sequential code blocks until shutdown or EOF."""
+    """Initialize once and run sequential code blocks until shutdown or EOF."""
     configure_logging()
     logger.debug("Entrando en main")
-    logger.info("Trabajador iniciado; esperando configuración JSON del supervisor")
+    logger.info("Trabajador iniciado; esperando configuración JSON "
+                "del supervisor")
     input_stream, output_stream = sys.stdin, sys.stdout
     try:
         message = _receive_message(input_stream)
@@ -268,14 +287,21 @@ def main() -> int:
             message = _receive_message(input_stream)
             if message is None:
                 return 0
-            if message["type"] != "execute" or not isinstance(message.get("code"), str):
-                raise WorkerProtocolError("Expected execute with a code string.")
+            if (message["type"] != "execute"
+                    or not isinstance(message.get("code"), str)):
+                raise WorkerProtocolError(
+                    "Expected execute with a code string."
+                )
             execute_block(message["code"], namespace, output_stream)
     except (Exception, WorkerProtocolError) as exc:
         logger.error("Fallo fatal del trabajador: %s", type(exc).__name__)
-        # Fatal errors are data too, so silence never hides the startup diagnosis.
+        # Fatal errors are data too, so silence never hides the startup
+        # diagnosis.
         try:
-            _send_message(output_stream, {"type": "worker_error", "error": f"{type(exc).__name__}: {exc}"})
+            _send_message(output_stream, {
+                "type": "worker_error",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
         except WorkerProtocolError:
             logger.error("No se pudo comunicar el fallo: canal JSON cerrado")
         return 1

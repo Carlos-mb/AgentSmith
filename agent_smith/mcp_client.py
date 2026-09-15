@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from agent_smith.logging_config import LOG_LEVEL_ENV, get_logger
 
-logger = get_logger('agent_smith.mcp_client')
-
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import keyword
@@ -24,6 +22,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import PaginatedRequestParams
+
+logger = get_logger('agent_smith.mcp_client')
 
 
 @dataclass
@@ -48,8 +48,10 @@ class MCPManual:
         """
         logger.debug("Entrando en MCPManual.as_text")
         logger.debug(
-            "Generando manual: herramientas=%s, recursos=%s, plantillas=%s, prompts=%s",
-            len(self.tools), len(self.resources), len(self.resource_templates), len(self.prompts),
+            "Generando manual: herramientas=%s, recursos=%s, plantillas=%s, "
+            "prompts=%s",
+            len(self.tools), len(self.resources),
+            len(self.resource_templates), len(self.prompts),
         )
 
         lines = []
@@ -203,12 +205,13 @@ class MCPClient:
 
         self._stack = None
         self._session = None
-        logger.debug("Configuración MCP preparada: transporte=%s", "stdio" if self.stdio_command else "HTTP")
+        logger.debug("Configuración MCP preparada: transporte=%s",
+                     "stdio" if self.stdio_command else "HTTP")
 
     async def start(
         self, *, deadline: float | None = None,
     ) -> tuple[ClientSession, MCPManual]:
-        """Open the selected transport and discover capabilities with the SDK."""
+        """Open the transport and discover its capabilities with the SDK."""
         logger.debug("Entrando en MCPClient.start")
         logger.info("Abriendo MCP y solicitando capacidades al servidor")
         if self._stack is not None:
@@ -220,7 +223,8 @@ class MCPClient:
         try:
             if self.stdio_command is not None:
                 environment = dict(self.environment)
-                environment.setdefault(LOG_LEVEL_ENV, os.environ.get(LOG_LEVEL_ENV, ""))
+                environment.setdefault(LOG_LEVEL_ENV,
+                                       os.environ.get(LOG_LEVEL_ENV, ""))
                 parameters = StdioServerParameters(
                     command=self.stdio_command[0], args=self.stdio_command[1:],
                     env=environment,
@@ -232,35 +236,52 @@ class MCPClient:
                 read, write, _ = await self._stack.enter_async_context(
                     streamable_http_client(self.server_url),
                 )
-            self._session = await self._stack.enter_async_context(ClientSession(
-                read, write, read_timeout_seconds=timedelta(seconds=remaining),
-            ))
-            # These scopes cover requests only, never the lifetime of SDK contexts.
-            timeout = remaining if deadline is None else max(0, deadline - time.monotonic())
+            self._session = await self._stack.enter_async_context(
+                ClientSession(
+                    read, write,
+                    read_timeout_seconds=timedelta(seconds=remaining),
+                ))
+            # These scopes cover requests only, never the lifetime of SDK
+            # contexts.
+            timeout = (remaining if deadline is None
+                       else max(0, deadline - time.monotonic()))
             with anyio.fail_after(timeout):
-                logger.debug("MCP ENVIADO [initialize]: inicialización mediante el SDK")
+                logger.debug("MCP ENVIADO [initialize]: inicialización "
+                             "mediante el SDK")
                 initialized = await self._session.initialize()
                 if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug("MCP RECIBIDO [initialize]:\n%s", initialized.model_dump_json(indent=2, by_alias=True))
-                logger.debug("MCP initialize completado; descubriendo herramientas, recursos y prompts")
+                    logger.debug("MCP RECIBIDO [initialize]:\n%s",
+                                 initialized.model_dump_json(
+                                     indent=2, by_alias=True))
+                logger.debug("MCP initialize completado; descubriendo "
+                             "herramientas, recursos y prompts")
                 capabilities = initialized.capabilities
                 tools, resources, templates, prompts = [], [], [], []
                 for capability, method, field, destination in (
-                    (capabilities.tools, self._session.list_tools, "tools", tools),
-                    (capabilities.resources, self._session.list_resources, "resources", resources),
-                    (capabilities.resources, self._session.list_resource_templates,
+                    (capabilities.tools, self._session.list_tools, "tools",
+                     tools),
+                    (capabilities.resources, self._session.list_resources,
+                     "resources", resources),
+                    (capabilities.resources,
+                     self._session.list_resource_templates,
                      "resourceTemplates", templates),
-                    (capabilities.prompts, self._session.list_prompts, "prompts", prompts),
+                    (capabilities.prompts, self._session.list_prompts,
+                     "prompts", prompts),
                 ):
                     if capability is None:
-                        logger.debug("El servidor no anuncia la capacidad de %s", field)
+                        logger.debug("El servidor no anuncia la capacidad "
+                                     "de %s", field)
                         continue
                     cursor = None
                     while True:
-                        logger.debug("MCP ENVIADO [listado %s]: cursor=%r", field, cursor)
-                        page = await method(params=PaginatedRequestParams(cursor=cursor))
+                        logger.debug("MCP ENVIADO [listado %s]: cursor=%r",
+                                     field, cursor)
+                        page = await method(
+                            params=PaginatedRequestParams(cursor=cursor))
                         if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug("MCP RECIBIDO [listado %s]:\n%s", field, page.model_dump_json(indent=2, by_alias=True))
+                            logger.debug(
+                                "MCP RECIBIDO [listado %s]:\n%s", field,
+                                page.model_dump_json(indent=2, by_alias=True))
                         destination.extend(
                             item.model_dump(mode="json", by_alias=True)
                             for item in getattr(page, field)
@@ -268,18 +289,21 @@ class MCPClient:
                         cursor = page.nextCursor
                         if not cursor:
                             break
-                    logger.debug("Descubrimiento %s completado: %s elementos", field, len(destination))
+                    logger.debug("Descubrimiento %s completado: %s elementos",
+                                 field, len(destination))
             logger.info("MCP conectado y descubrimiento completado")
             return self._session, MCPManual(
-                initialized.instructions or "", tools, resources, templates, prompts,
+                initialized.instructions or "", tools, resources, templates,
+                prompts,
             )
         except BaseException:
-            logger.exception("Fallo al iniciar MCP; cerrando contextos abiertos")
+            logger.exception("Fallo al iniciar MCP; cerrando contextos "
+                             "abiertos")
             await self.close()
             raise
 
     async def close(self) -> None:
-        """Close SDK contexts in their owning task, in reverse opening order."""
+        """Close SDK contexts in their owning task, in reverse order."""
         logger.debug("Entrando en MCPClient.close")
         logger.info("Cerrando sesión y transporte MCP")
         stack = self._stack
