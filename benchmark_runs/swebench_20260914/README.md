@@ -9,9 +9,20 @@ without `--skip-metrics`.
 The exam draws three tasks at random from a pool of six (`EXAM_POOL` in
 moulinette's `swebench/interact.py`) and requires two to pass. All six pass
 here with at least one model: five with `gemini-3.5-flash-lite`, and
-`sympy__sympy-14711` only with `dots-studio/dots-3-note-preview:free`.
-`gemini-3.5-flash-lite` failed it every time: twice on its own (below), once in
-the real exam run, and once after the `run_tests` fix (`ablation/run_tests_fix/`).
+`sympy__sympy-14711` with `dots-studio/dots-3-note-preview:free`.
+`gemini-3.5-flash-lite` failed it every time: twice on its own (below), twice
+in real exam runs, once after the `run_tests` fix (`ablation/run_tests_fix/`)
+and once with a prompt variant (`ablation/two_sentences/`).
+
+`codestral-2508`, the SWE-bench model since 15 September, passes all six with
+its final configuration. `sympy__sympy-14711` passed in one of its two runs.
+Its runs are in `ablation/observation_stop/` (all six tasks; the configuration
+without the `Observation:` stop is in `ablation/without_observation_stop/`) and
+`exam_codestral_20260915/`: the real `exam_swebench.sh`, 3/3 on
+`sympy__sympy-14711` (15 iterations, 55,614 input tokens), `django__django-11066`
+(5, 13,316) and `sympy__sympy-13480` (5, 9,772). That directory keeps each
+task's `solution.json` and the exam script's output (`exam_stdout.log`), which
+contains the moulinette result.
 `django__django-12308` and `scikit-learn__scikit-learn-11310` are **not** in the
 pool. They are listed because they were run and failed. (An earlier version of
 this file wrongly counted them in a pool of seven.)

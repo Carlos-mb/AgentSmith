@@ -1,24 +1,28 @@
 # Benchmark report — SWE-bench model comparison
 
-Eight models on the same three SWE-bench tasks, plus a prompt ablation. Every
+Nine models on the same three SWE-bench tasks, plus four ablations. Every
 number below is read from a `solution.json` in `benchmark_runs/`, and every
 result was checked with `moulinette_eval validate swebench`, never with
 `--skip-metrics`. Failures are reported as they happened.
 
 ## 1. Setup
 
-**Agent.** This repository at commit `c5853a8`; section 5.3 adds one later
-change: one Thought → Code →
+**Agent.** This repository at commit `c5853a8` for sections 2 to 5.2. The
+`codestral-2508` runs and sections 5.3 and 5.4 use the later code with the two
+fixes of section 7. One Thought → Code →
 Observation loop, nine MCP tools, the task container held open by the agent's
 stdin. Exam limits: 30 iterations, 300,000 input tokens, 10,000 output tokens,
 900 seconds. Every model uses the same prompt and `configs/models_template.json`:
-at most 600 output tokens per request; Gemini 120 s timeout and 4 retries,
-OpenRouter 60 s and 2 retries.
+at most 600 output tokens per request; Gemini and Mistral 120 s timeout and 4
+retries, OpenRouter 60 s and 2 retries. `codestral-2508` stops at `<end_code>`
+and `Observation:` (section 5.4).
 
-**Models and providers.** Both free tiers, two API keys each.
+**Models and providers.** All free tiers: two API keys each for Google and
+OpenRouter at the time of the matrix, one for Mistral.
 
 | Provider | Endpoint | Models |
 | --- | --- | --- |
+| Mistral | `api.mistral.ai/v1` | `codestral-2508` |
 | Google AI Studio | `generativelanguage.googleapis.com/v1beta/openai` | `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3.5-flash`, `gemini-3.8-flash` |
 | OpenRouter | `openrouter.ai/api/v1` | `dots-studio/dots-3-note-preview:free`, `inclusionai/ling-3.0-flash-vl:free`, `nvidia/nemotron-3.5-lightning:free`, `google/gemma-4-31b-it:free` |
 
@@ -37,14 +41,20 @@ Why these three:
   `scikit-learn__scikit-learn-13439` and 7.6 GB for `pydata__xarray-4629`. The
   disk filled once while images were being pulled. The sixth pool task,
   `sympy__sympy-14711`, was run separately after the matrix.
-  `gemini-3.5-flash-lite` failed all four of its attempts, each time reaching
-  30 iterations with no final answer: two on their own, one in the real
-  `exam_swebench.sh` run, and one in section 5.3.
+  `gemini-3.5-flash-lite` failed all six of its attempts, each time running
+  out of iterations or input budget with no final answer: two on their own,
+  two in real `exam_swebench.sh` runs, one in section 5.3 and one while
+  testing a prompt variant.
   `dots-3-note-preview` passed it in 26 iterations with 96,724 input tokens.
-  The evidence is in `benchmark_runs/swebench_20260914/sympy-14711/`.
+  `codestral-2508` passed it once in two runs with its final configuration:
+  15 iterations and 55,614 input tokens in the real `exam_swebench.sh`, and
+  30 iterations with no final answer in section 5.4.
+  The evidence is in `benchmark_runs/swebench_20260914/sympy-14711/` and
+  `…/exam_codestral_20260915/sympy-14711/`.
 
 **When.** `gemini-3.5-flash-lite` on 14 September 2026; the other seven models
-and the ablation on 15 September 2026. One run per model × task.
+and the ablations on 15 September 2026; `codestral-2508` on the evening of 15
+September. One run per model × task.
 
 ## 2. Results
 
@@ -54,6 +64,7 @@ by `benchmark_runs/swebench_20260914/<path>/solution.json` next to its
 
 | Model | `sympy__sympy-13480` | `sympy__sympy-18189` | `django__django-11066` |
 | --- | --- | --- | --- |
+| `codestral-2508` | **PASS** · 5 / 9,409 / 200 / 13 s | **PASS** · 4 / 11,234 / 228 / 25 s | **PASS** · 5 / 13,496 / 241 / 13 s |
 | `gemini-3.5-flash-lite` | **PASS** · 8 / 27,767 / 455 / 24 s | **PASS** · 7 / 23,054 / 411 / 83 s | **PASS** · 7 / 26,604 / 413 / 13 s |
 | `dots-3-note-preview` | **PASS** · 10 / 31,534 / 1,136 / 37 s | **PASS** · 11 / 35,957 / 1,391 / 38 s | **PASS** · 6 / 20,621 / 829 / 25 s |
 | `ling-3.0-flash-vl` | **PASS** · 8 / 22,535 / 445 / 20 s | FAIL¹ · 11 / 46,190 / 488 / 41 s | **PASS** · 6 / 22,237 / 351 / 14 s |
@@ -67,7 +78,8 @@ by `benchmark_runs/swebench_20260914/<path>/solution.json` next to its
 success. ² Input budget exhausted. ³ Provider error: HTTP 503 or 429. ⁴ Task
 deadline reached. ⁵ A request timed out.
 
-Paths: `gemini-3.5-flash-lite` → `<task>/`; every other model →
+Paths: `codestral-2508` → `ablation/observation_stop/codestral-2508/<task>/`;
+`gemini-3.5-flash-lite` → `<task>/`; every other model →
 `comparison/<model>/<task>/`, where the directory is the model id with `/` and
 `:` replaced by `_`. The task directories are `sympy-13480`, `sympy-18189` and
 `django-11066`.
@@ -76,6 +88,7 @@ Totals over the three tasks:
 
 | Model | Passed | Iterations | Input tokens | Output tokens | Time |
 | --- | ---: | ---: | ---: | ---: | ---: |
+| `codestral-2508` | 3/3 | 14 | 34,139 | 669 | 51 s |
 | `gemini-3.5-flash-lite` | 3/3 | 22 | 77,425 | 1,279 | 120 s |
 | `dots-3-note-preview` | 3/3 | 27 | 88,112 | 3,356 | 100 s |
 | `ling-3.0-flash-vl` | 2/3 | 25 | 90,962 | 1,284 | 75 s |
@@ -96,6 +109,7 @@ Read from the per-step fields `request_time_ms` and `retries`.
 
 | Model | Steps | Retries | Steps with no usable text | Availability | Avg time per step | Runs ended by the provider |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `codestral-2508` | 14 | 0 | 0 | 100% | 1.1 s | 0/3 |
 | `gemini-3.5-flash-lite` | 22 | 1 | 0 | 95.7% | 4.3 s | 0/3 |
 | `dots-3-note-preview` | 27 | 0 | 0 | 100% | 2.8 s | 0/3 |
 | `ling-3.0-flash-vl` | 25 | 3 | 0 | 89.3% | 1.5 s | 0/3 |
@@ -129,7 +143,8 @@ What stands out:
 
 ## 4. Intermediary metrics
 
-Measured on every passing run: the ten in section 2 and the six in section 5.
+Measured on every passing run: the thirteen in section 2 and the six in
+section 5.1.
 
 **a) First step that reads or edits a file of the final patch** (exploration
 efficiency). The first `read_file` or `edit_file` whose `sandbox_input` names a
@@ -137,6 +152,7 @@ file that appears in the submitted diff.
 
 | Model | 13480 | 18189 | 11066 |
 | --- | ---: | ---: | ---: |
+| `codestral-2508` | 2 | 1 | 2 |
 | `gemini-3.5-flash-lite` | 2 | 1 | 2 |
 | `dots-3-note-preview` | 2 | 3 | 2 |
 | `ling-3.0-flash-vl` | 2 | — | 2 |
@@ -144,7 +160,8 @@ file that appears in the submitted diff.
 | ablation runs (6) | 2, 2 | 2, 2 | 2, 3 |
 
 **b) Iterations between "tests first pass" and `final_answer`** (submission
-discipline; zero is ideal). "Tests first pass" is the first step after the last
+discipline; 1 is the minimum, because the prompt asks for `final_answer` in a
+new response after the model has seen the test result). "Tests first pass" is the first step after the last
 edit that either calls `run_tests` or runs a test command through `run_command`
 whose output shows a passing summary (sympy `tests finished: … passed` with no
 failures, a unittest `OK` line). A `run_tests` call on the final code counts as
@@ -154,6 +171,9 @@ passed moulinette. In these runs its own output could not confirm this
 
 | Run | Iterations after tests pass | Input tokens spent after tests pass |
 | --- | ---: | ---: |
+| `codestral-2508` · 13480 | 1 | 2,713 of 9,409 (29%) |
+| `codestral-2508` · 18189 | 1 | 3,396 of 11,234 (30%) |
+| `codestral-2508` · 11066 | 1 | 3,576 of 13,496 (26%) |
 | `gemini-3.5-flash-lite` · 13480 | 3 | 16,628 of 27,767 (60%) |
 | `gemini-3.5-flash-lite` · 18189 | 2 | 7,489 of 23,054 (32%) |
 | `gemini-3.5-flash-lite` · 11066 | 2 | 8,487 of 26,604 (32%) |
@@ -176,18 +196,21 @@ Ablation rows are in task order 13480 / 18189 / 11066. Without the warning:
 - **Finding the file is not the bottleneck.** Every passing run touches the
   file it will patch by step 1–3, 2 in most cases. Differences in iteration
   counts come from what happens *after* the edit.
-- **Submission is.** No run submits in the step right after its tests pass.
-  Between 1 and 3 iterations, costing 11% to 60% of the task's input tokens,
-  go into re-running tests, printing `git diff` and calling `get_patch` before
-  `final_answer`. Those late steps are the most expensive ones, because each
-  resends the whole grown history. This is the clearest efficiency gain left
-  in the agent.
-- **Models verify through `run_command`, not `run_tests`.** In 5 of the 10
-  passing matrix runs, the model never called `run_tests` after its last edit
-  and ran the test file itself instead. We suspected `run_tests`' output,
-  which hid the result (section 7). Fixing it changed nothing:
-  `gemini-3.5-flash-lite` then did not call `run_tests` once in four runs
-  (section 5.3). So the post-pass iterations have another cause.
+- **Submission is, and it depends on the model.** `codestral-2508` submits in
+  the step right after its tests pass in all three runs, the minimum. The
+  other models do so in only 4 of their 15 measured runs. The rest spend 2 or
+  3 iterations, up to 60% of the task's input tokens, re-running tests,
+  printing `git diff` and calling `get_patch` before `final_answer`. Those
+  late steps are the most expensive ones, because each resends the whole
+  grown history.
+- **Most models verify through `run_command`, not `run_tests`.** In 5 of the
+  10 passing runs of the first eight models, the model never called
+  `run_tests` after its last edit and ran the test file itself instead. We
+  suspected `run_tests`' output, which hid the result (section 7). Fixing it
+  changed nothing: `gemini-3.5-flash-lite` then did not call `run_tests` once
+  in four runs (section 5.3). `codestral-2508` is the exception: it calls
+  `run_tests` right after its edit in every passing run, and that is where
+  its short runs come from.
 
 ## 5. Ablation
 
@@ -294,22 +317,78 @@ Evidence: `benchmark_runs/swebench_20260914/ablation/run_tests_fix/gemini-3.5-fl
   would be a prompt rule to submit as soon as the tests pass. That remains
   untested.
 
+### 5.4 SWE-bench: stopping `codestral-2508` at `Observation:` (a configuration change)
+
+**Change.** On its first runs `codestral-2508` had the same stop sequence as
+the other models, `<end_code>`, which it never writes. After its code block it
+kept going: it wrote an `Observation:` with file contents it had not read, then
+another block, until the 600-token cap per request. The only change is adding
+`"Observation:"` to its `stop_sequences` in `configs/models_template.json`, so
+the provider ends the reply where the real observation should begin. The idea
+came from another student's project, whose default stop list is exactly these
+two strings. Same code, model, tasks and day, on all six pool tasks.
+
+| Task | Without the stop | With the stop |
+| --- | --- | --- |
+| `pydata__xarray-4629` | FAIL⁶ · 20 / 164,963 / 10,000 / 105 s | **PASS** · 5 / 14,701 / 387 / 11 s |
+| `scikit-learn__scikit-learn-13439` | **PASS** · 11 / 50,613 / 3,333 / 44 s | **PASS** · 5 / 11,701 / 208 / 8 s |
+| `sympy__sympy-13480` | **PASS** · 5 / 11,453 / 214 / 11 s | **PASS** · 5 / 9,409 / 200 / 13 s |
+| `sympy__sympy-18189` | **PASS** · 4 / 11,055 / 222 / 26 s | **PASS** · 4 / 11,234 / 228 / 25 s |
+| `django__django-11066` | **PASS** · 5 / 13,489 / 238 / 10 s | **PASS** · 5 / 13,496 / 241 / 13 s |
+| `sympy__sympy-14711` | FAIL⁷ · 16 / 62,376 / 1,968 / 27 s | FAIL⁸ · 30 / 252,497 / 2,849 / 80 s |
+| **Total** | 4/6 · 61 / 313,949 / 15,975 / 223 s | 5/6 · 54 / 313,038 / 4,113 / 150 s |
+| Replies with an invented `Observation:` | 27 (17 of them in xarray) | 0 |
+| Replies cut at the 600-token cap | 21 | 0 |
+
+⁶ Output budget exhausted after 20 iterations spent reading, with no edit.
+⁷ Submitted a patch to `_check_vector` although `run_tests` had twice reported
+`0 passed, 4 exceptions`; moulinette: correctness FAILED. ⁸ Iteration limit,
+with 13 `run_tests` calls and no working fix.
+
+Evidence: `benchmark_runs/swebench_20260914/ablation/without_observation_stop/`
+and `…/ablation/observation_stop/`, then `codestral-2508/<task>/`.
+
+**What was learned.**
+
+- **The effect is large and its mechanism is visible.** Invented observations
+  went from 27 replies to 0, output tokens fell by 74%, and `xarray-4629` went
+  from an exhausted output budget to a pass in 5 iterations. Unlike 5.1 and
+  5.3, this is far outside the run-to-run noise.
+- **Where the mechanism never fired, nothing moved.** On `13480`, `18189` and
+  `11066` the model invented nothing before the change, and the numbers stayed
+  within a few hundred tokens. That is what a change acting only through that
+  mechanism should produce.
+- **It does not solve `sympy__sympy-14711` reliably.** With the stop, the model
+  failed it here and passed it in the real `exam_swebench.sh` run the same
+  evening (15 iterations): one of two.
+- **Decision: keep it, for this model only.** The other models write
+  `<end_code>` and keep their single stop sequence; adding `Observation:` to
+  them is untested.
+
 ## 6. Conclusions
 
-**Selected: `gemini-3.5-flash-lite`.** It passed all nine of its runs: three on
-14 September plus six in the ablation. It used the fewest input tokens of any
-model (77,425 for the three tasks) and needed one retry in 76 steps. It is the
-first entry in `configs/models_template.json`.
+**Selected: `codestral-2508` (Mistral).** 3/3 on the matrix tasks with 14
+iterations and 34,139 input tokens, less than half of `gemini-3.5-flash-lite`'s
+77,425. It also passed `xarray-4629` and `scikit-learn-13439` in 5 iterations
+each, and scored 3/3 in the real `exam_swebench.sh`, including
+`sympy__sympy-14711` (evidence: `exam_codestral_20260915/`). It submits in the
+step right after its tests pass, and it needed no retry: its free tier allowed
+125 requests and 625,000 tokens per minute. It depends on section 5.4's stop
+sequence; without it, it scored 4/6.
 
-**Backup: `dots-studio/dots-3-note-preview:free`.** 3/3, with 100% availability
-and no retries. It uses about 14% more input tokens and 2.6× the output tokens
-of the selected model. What matters is that it sits on a different provider
-with a separate quota, so an outage or an exhausted quota at Google does not
-stop the agent. It is also the only model that has passed
-`sympy__sympy-14711`, the one pool task the selected model fails. In the two
-attempts examined step by step, `gemini-3.5-flash-lite` wrote its fix as a function defined
-inside the sandbox instead of editing the file, reached `edit_file` only at
-step 25 or 28, and broke the tests.
+**First backup: `gemini-3.5-flash-lite`.** It passed all nine of its runs on
+the matrix tasks, three on 14 September plus six in the ablation, with one
+retry in 76 steps, and 2/3 twice in the real `exam_swebench.sh`. It used the
+fewest input tokens of the first eight models (77,425), and it sits on a
+different provider. It has never passed `sympy__sympy-14711`: in the two
+attempts examined step by step, it wrote its fix as a function defined inside
+the sandbox instead of editing the file, reached `edit_file` only at step 25
+or 28, and broke the tests.
+
+**Second backup: `dots-studio/dots-3-note-preview:free`.** 3/3, with 100%
+availability and no retries. It uses about 14% more input tokens and 2.6× the
+output tokens of `gemini-3.5-flash-lite`, on a third provider with a separate
+quota. It passed `sympy__sympy-14711` once.
 
 **Usable third: `inclusionai/ling-3.0-flash-vl:free`.** It is the fastest per
 step (1.5 s), cheap, and passed 2/3. Its failure was a submission without a
@@ -332,7 +411,8 @@ diff, which the agent records as a failure rather than a false pass.
 availability changes by the hour. The rows for `gemini-3.5-flash`,
 `gemini-3.8-flash` and `gemma-4-31b-it` measure the providers that day at
 least as much as the models. Section 5.1 shows the same configuration varying
-by up to four iterations per task.
+by up to four iterations per task. `codestral-2508` has one run per task with
+its final configuration, plus the three of the exam run, all on one evening.
 
 **Cost.** Every run used free tiers and cost nothing. The token columns are
 what a paid tier would bill.
@@ -355,7 +435,8 @@ what a paid tier would bill.
   `asyncio.TimeoutError`, and `test_a_request_timeout_ends_with_an_explicit_message`
   fails on the old code.
 
-The runs in sections 2 to 5.2 were made before both fixes.
+The runs in sections 2 to 5.2 were made before both fixes; the
+`codestral-2508` runs and sections 5.3 and 5.4, after.
 
 ## 8. Reproducing a cell
 
@@ -373,5 +454,7 @@ uv run moulinette_eval validate swebench \
   ../student/solution.json
 ```
 
-OpenRouter models use `--provider-url https://openrouter.ai/api/v1`. The task
+OpenRouter models use `--provider-url https://openrouter.ai/api/v1`;
+`codestral-2508` uses `--provider-url https://api.mistral.ai/v1` and reads
+`MISTRAL_API_KEY`. The task
 images were pulled beforehand, so the measured times exclude the download.

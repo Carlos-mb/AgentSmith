@@ -206,34 +206,42 @@ reply at 600 tokens, also bounded by the task's remaining output allowance.
 The free router leaves reasoning at the selected model's default: some endpoints
 reject disabling it. Reasoning tokens still consume the same task allowance.
 
-`configs/models_template.json` contains seven explicitly selectable configurations,
-chosen on 2026-09-14 by cross-checking which models other passing projects reported
-against what the free catalogue still offers. Several models those reports relied on
+`configs/models_template.json` contains nine explicitly selectable configurations,
+chosen by cross-checking which models other passing projects reported against what the
+free tiers still offer. Several models those reports relied on
 (`openai/gpt-oss-120b:free`, `deepseek-v4-flash:free`, `glm-4.5-air:free`,
 `qwen3-next-80b:free`) have since disappeared from OpenRouter's free tier.
 
+Through Mistral's API, with `MISTRAL_API_KEY`:
+
+- `codestral-2508` — **the SWE-bench model.** It scored 3/3 in the real
+  `exam_swebench.sh`, including `sympy__sympy-14711`, and used less than half the
+  tokens of `gemini-3.5-flash-lite` in the [benchmark report](BENCHMARK_REPORT.md).
+  It stops at `<end_code>` and at `Observation:`; without the second stop it invented
+  tool output until its token budget ran out (report section 5.4). On the free tier
+  checked on 2026-09-15, `mistral-medium`, `mistral-small` and `devstral-medium` had a
+  limit of zero requests per minute and `mistral-large` was not included.
+
 Through Google's OpenAI-compatible endpoint, which has its own daily quota:
 
-- `gemini-3.5-flash-lite` — **the SWE-bench model.** It passed 3/3 in the benchmark
-  report and 2/3 in the real `exam_swebench.sh`. It fails `sympy__sympy-14711` every
-  time.
+- `gemini-3.5-flash-lite` — **the first SWE-bench backup and the MBPP backup.** It
+  passed 3/3 in the benchmark report, 2/3 twice in the real `exam_swebench.sh` (it has
+  never passed `sympy__sympy-14711`) and 5/5 in the real `exam_mbpp.sh`.
 - `gemini-3.1-flash-lite`, `gemini-3.5-flash` and `gemini-3.8-flash` — measured in the
-  [benchmark report](BENCHMARK_REPORT.md) and discarded.
+  report and discarded.
 
 Through OpenRouter, all on the free tier:
 
-- `dots-studio/dots-3-note-preview:free` — **the SWE-bench backup.** It passed 3/3 in
-  the report, runs on a second provider with its own quota, and is the only model that
-  passed `sympy__sympy-14711`.
+- `dots-studio/dots-3-note-preview:free` — **the second SWE-bench backup.** It passed
+  3/3 in the report and passed `sympy__sympy-14711` once.
 - `nvidia/nemotron-3.5-lightning:free` and `google/gemma-4-31b-it:free` — measured in
   the report and discarded (0/3).
 - `inclusionai/ling-3.0-flash-vl:free` — **the MBPP model.** It validated tasks 396
-  and 163 through moulinette and scored 5/5 in the real `exam_mbpp.sh`.
+  and 163 through moulinette and scored 5/5 twice in the real `exam_mbpp.sh`.
 
-For the exam, pass `--model-name gemini-3.5-flash-lite --provider-url
-https://generativelanguage.googleapis.com/v1beta/openai` to `exam_swebench.sh`, and
-`--model-name inclusionai/ling-3.0-flash-vl:free --provider-url
-https://openrouter.ai/api/v1` to `exam_mbpp.sh`. The `.env` must contain
+For the exam, pass `--model-name codestral-2508 --provider-url https://api.mistral.ai/v1`
+to `exam_swebench.sh`, and `--model-name inclusionai/ling-3.0-flash-vl:free
+--provider-url https://openrouter.ai/api/v1` to `exam_mbpp.sh`. The `.env` must contain
 `AGENT_SMITH_MODELS_CONFIG=configs/models_template.json`, as `.env.example` does.
 
 The three OpenRouter entries above declare no stop sequence because those models do not
@@ -492,10 +500,11 @@ change.
 
 ## Benchmark results and analysis
 
-The [benchmark report](BENCHMARK_REPORT.md) compares eight models on the same
+The [benchmark report](BENCHMARK_REPORT.md) compares nine models on the same
 three SWE-bench tasks, with provider reliability, two intermediary metrics and
-two prompt ablations. `gemini-3.5-flash-lite` is the selected model, with
-`dots-studio/dots-3-note-preview:free` as the backup on a second provider.
+four ablations. `codestral-2508` is the selected model, with
+`gemini-3.5-flash-lite` and `dots-studio/dots-3-note-preview:free` as backups on
+two other providers.
 Every figure is read from a `solution.json` kept under `benchmark_runs/`.
 
 ## Resources and AI assistance

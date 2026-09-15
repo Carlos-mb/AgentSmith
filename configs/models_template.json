@@ -114,6 +114,20 @@
         "<end_code>"
       ],
       "reasoning_enabled": false
+    },
+    {
+      "api_url": "https://api.mistral.ai/v1",
+      "model_name": "codestral-2508",
+      "api_key_environment_variables": [
+        "MISTRAL_API_KEY"
+      ],
+      "timeout_seconds": 120,
+      "max_retries": 4,
+      "max_output_per_request": 600,
+      "stop_sequences": [
+        "<end_code>",
+        "Observation:"
+      ]
     }
   ]
 }
