@@ -6,6 +6,7 @@ logger = get_logger('agent_swebench')
 
 import argparse
 import asyncio
+import sys
 import time
 from pathlib import Path
 from typing import Sequence
@@ -69,6 +70,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (RuntimeError, ValueError) as exc:
         logger.error("Error: %s", exc)
         return 1
+    except KeyboardInterrupt:
+        # Ctrl+C: asyncio.run ya ha cancelado la tarea y cerrado el contenedor;
+        # sin esto el usuario veía un traceback que parecía un fallo.
+        print("Interrupted: no solution file was written.", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

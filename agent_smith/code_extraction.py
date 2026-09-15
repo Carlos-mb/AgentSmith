@@ -154,6 +154,11 @@ def convert_tool_use(llm_output: str) -> str:
     return "\n".join(statements)
 
 
+CONVERTED_TOOL_CALL_FEEDBACK = (
+    "No ```python block was found; the tool call was converted to Python and executed."
+)
+
+
 def extract_agent_code(llm_output: str) -> tuple[str, str]:
     """Return executable Python from a fenced block, or from tool calls."""
     logger.debug("Entrando en extract_agent_code")
@@ -168,5 +173,6 @@ def extract_agent_code(llm_output: str) -> tuple[str, str]:
             logger.warning("Llamada de herramienta malformada: %s", exc)
             return "", f"Malformed tool call: {exc}"
         if converted:
-            return converted, ""
+            # La hoja exige avisar cuando un bloque mal formado se interpreta igual.
+            return converted, CONVERTED_TOOL_CALL_FEEDBACK
     return code, feedback

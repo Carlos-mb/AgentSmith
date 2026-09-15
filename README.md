@@ -48,11 +48,12 @@ when the explicitly selected free router changes models between requests.
 The SWE-bench tools and adapter are implemented: the tools pass the sandbox
 exam's own test, and a controlled cycle test drives the real CLI, container, MCP
 server and worker through exploration, an edit and `final_answer(get_patch())`.
-Five tasks of the exam's pool pass moulinette
+All six tasks of the exam's pool pass moulinette with at least one model
 ([evidence](benchmark_runs/swebench_20260914/README.md)), and the model
 comparison is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md). Extraction takes a closed
 ```python block first and otherwise converts `<tool_call>` blocks into the
-equivalent Python calls. That conversion is not optional in practice: in a live
+equivalent Python calls, telling the model in its observation that the call was
+converted and executed. That conversion is not optional in practice: in a live
 SWE-bench run the selected model switched to that dialect after its first
 observation, and every later iteration produced nothing executable without it.
 The subject's XML `<invoke>` and ReAct formats are still not handled; no model

@@ -1,4 +1,6 @@
-from agent_smith.code_extraction import extract_python_code, extract_agent_code
+from agent_smith.code_extraction import (
+    CONVERTED_TOOL_CALL_FEEDBACK, extract_agent_code, extract_python_code,
+)
 
 
 def test_extract_python_fenced_block():
@@ -141,7 +143,7 @@ def test_tool_call_becomes_a_printed_python_call():
     code, feedback = extract_agent_code(output)
 
     assert code == "print(read_file(filepath='/testbed/x.py', start_line=586))"
-    assert feedback == ""
+    assert feedback == CONVERTED_TOOL_CALL_FEEDBACK
 
 
 def test_a_python_fence_wins_over_a_tool_call():
@@ -190,7 +192,7 @@ def test_a_forgotten_arg_value_opening_tag_still_converts():
     code, feedback = extract_agent_code(output)
 
     assert code == 'print(run_command(command=\'cd /testbed && echo "hola"\'))'
-    assert feedback == ""
+    assert feedback == CONVERTED_TOOL_CALL_FEEDBACK
 
 
 def test_a_tool_call_without_arguments_converts():
@@ -208,7 +210,7 @@ def test_a_forgotten_arg_value_closing_tag_still_converts():
     code, feedback = extract_agent_code(output)
 
     assert code == 'print(run_command(command=\'cd /testbed && python -c "print(1)"\'))'
-    assert feedback == ""
+    assert feedback == CONVERTED_TOOL_CALL_FEEDBACK
 
 
 def test_an_unusable_tool_name_is_refused():
@@ -241,7 +243,7 @@ def test_tool_use_with_json_arguments_becomes_a_python_call():
     code, feedback = extract_agent_code(output)
 
     assert code == "print(search_code(pattern='cotm', file_pattern='*.py'))"
-    assert feedback == ""
+    assert feedback == CONVERTED_TOOL_CALL_FEEDBACK
 
 
 def test_tool_use_without_arguments_converts():
