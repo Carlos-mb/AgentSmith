@@ -1,6 +1,6 @@
 # Benchmark report — SWE-bench model comparison
 
-Nine models on the same three SWE-bench tasks, plus four ablations. Every
+Nine models on the same three SWE-bench tasks, plus five ablations. Every
 number below is read from a `solution.json` in `benchmark_runs/`, and every
 result was checked with `moulinette_eval validate swebench`, never with
 `--skip-metrics`. Failures are reported as they happened.
@@ -8,7 +8,7 @@ result was checked with `moulinette_eval validate swebench`, never with
 ## 1. Setup
 
 **Agent.** This repository at commit `c5853a8` for sections 2 to 5.2. The
-`codestral-2508` runs and sections 5.3 and 5.4 use the later code with the two
+`codestral-2508` runs and sections 5.3 to 5.5 use the later code with the two
 fixes of section 7. One Thought → Code →
 Observation loop, nine MCP tools, the task container held open by the agent's
 stdin. Exam limits: 30 iterations, 300,000 input tokens, 10,000 output tokens,
@@ -365,6 +365,50 @@ and `…/ablation/observation_stop/`, then `codestral-2508/<task>/`.
   `<end_code>` and keep their single stop sequence; adding `Observation:` to
   them is untested.
 
+### 5.5 SWE-bench: warning the model when it repeats itself (a loop change, discarded)
+
+**Change.** In the failed `sympy__sympy-14711` run of section 5.4,
+`codestral-2508` edited the wrong file, `sympy/vector/vector.py`, and then sent
+the same edit and `run_tests` 13 times in turn. Every `run_tests` traceback
+named the right file, `sympy/physics/vector/vector.py`. The model had the
+information and did not use it, so a new MCP tool would not help. The change
+tested was a few lines in the loop: when a block repeated both the code and
+the result of an earlier step, the observation added *"Note: you already ran
+exactly this code and got exactly this result. Repeating it will not change
+anything: re-read the last error or test output and try something
+different."* Requiring the same result as well keeps a legitimate repeat, such
+as `run_tests()` after a different edit, from triggering it. Replayed over the
+65 saved result files, the rule would have fired in 6. Same model,
+configuration and task, four runs on the evening of 15 September.
+
+| Run | Result · iterations / input / output / time | Warnings | What happened |
+| --- | --- | ---: | --- |
+| 1 | FAIL · 30 / 106,702 / 1,714 / 39 s | 25 | The same `read_file` 24 times in a row |
+| 2 | FAIL · 30 / 106,239 / 1,719 / 36 s | 24 | The same pattern as run 1 |
+| 3 | **PASS** · 11 / 27,423 / 604 / 24 s | 0 | No loop |
+| 4 | FAIL⁹ · 23 / 148,344 / 10,000 / 135 s | 0 | Read the wrong file in 10-line slices, 100 lines apart |
+| **Total** | 1/4 | | Without the warning: 1/2 (section 5.4 and the exam run) |
+
+⁹ Output budget exhausted: every reply from step 7 to 22 hit the 600-token cap,
+because the model wrote several `Thought:` blocks in a row, and the
+`Observation:` stop never fired since it never wrote that word.
+
+Evidence: `benchmark_runs/swebench_20260914/ablation/loop_warning/codestral-2508/sympy-14711/run1/`
+to `run4/`.
+
+**What was learned.**
+
+- **The model ignores the warning.** In run 1 the note first appears in the
+  observation of step 6, and the model repeats the same call until step 30.
+  The note sits in the latest observation, the part the history window always
+  sends, so trimming did not hide it.
+- **Loops are this model's main failure on this task.** All three failures
+  here, and the one in section 5.4, are loops. Run 4's loop reads a
+  new range every time, so a rule based on repeated code cannot see it.
+- **Decision: discarded.** 1/4 against 1/2 is no improvement, and with four
+  runs the difference is within the noise. The change was reverted; the code
+  in this repository does not contain it.
+
 ## 6. Conclusions
 
 **Selected: `codestral-2508` (Mistral).** 3/3 on the matrix tasks with 14
@@ -436,7 +480,7 @@ what a paid tier would bill.
   fails on the old code.
 
 The runs in sections 2 to 5.2 were made before both fixes; the
-`codestral-2508` runs and sections 5.3 and 5.4, after.
+`codestral-2508` runs and sections 5.3 to 5.5, after.
 
 ## 8. Reproducing a cell
 
