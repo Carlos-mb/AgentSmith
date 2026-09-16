@@ -23,6 +23,14 @@ without the `Observation:` stop is in `ablation/without_observation_stop/`) and
 (5, 13,316) and `sympy__sympy-13480` (5, 9,772). That directory keeps each
 task's `solution.json` and the exam script's output (`exam_stdout.log`), which
 contains the moulinette result.
+
+**Correction, 16 September:** "passes all six" above describes that campaign, not
+a reliable rate. `scikit-learn__scikit-learn-13439` failed twice that day with
+`codestral-2508` — in a real `exam_swebench.sh` run and in a direct re-run — after
+passing in both ablation variants. With `sympy__sympy-14711` it is the second pool
+task that goes one in two. Both runs of that day, with their three files each, are
+in `noop_edit_fix_20260916/`, which also documents the `edit_file` defect they
+exposed.
 `django__django-12308` and `scikit-learn__scikit-learn-11310` are **not** in the
 pool. They are listed because they were run and failed. (An earlier version of
 this file wrongly counted them in a pool of seven.)
@@ -87,3 +95,9 @@ reading code:
 - The Gemini timeout is 120 s: 60 s lost two tasks to `ReadTimeout`.
 - A final answer must contain `diff --git`. A model once submitted `get_patch`'s
   own "No changes yet." message and the task was recorded as passed.
+- `edit_file` used to answer `Edit applied successfully.` to an edit whose
+  `old_str` and `new_str` were identical, confirming a change that never happened.
+  In `scikit-learn__scikit-learn-13439` the model sent the same no-op edit 13
+  times and spent the whole task on it. It is now refused
+  (`noop_edit_fix_20260916/`). The task still fails: the model then alternates
+  between two wrong edits instead.

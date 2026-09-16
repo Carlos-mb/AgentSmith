@@ -112,6 +112,18 @@ def test_edit_file_refuses_a_result_that_would_not_compile(testbed):
     assert (testbed / "utils.py").read_text() == UTILS
 
 
+def test_edit_file_refuses_an_edit_that_changes_nothing(testbed):
+    # This used to answer "Edit applied successfully." to an edit that changed
+    # nothing. In scikit-learn-13439 the model sent the same no-op edit 13
+    # times, believed each confirmation and spent the whole task on it.
+    result = swebench_tools.edit_file(
+        "/testbed/utils.py", "return sum(numbers)", "return sum(numbers)")
+
+    assert "identical" in result
+    assert "Edit applied successfully." not in result
+    assert (testbed / "utils.py").read_text() == UTILS
+
+
 def test_get_patch_reports_no_changes_then_shows_the_diff(testbed):
     assert swebench_tools.get_patch() == "No changes yet."
 

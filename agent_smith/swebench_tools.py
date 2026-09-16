@@ -70,6 +70,14 @@ if count != 1:
         print("Extend old_str with nearby lines until it appears "
               "exactly once.")
     raise SystemExit(2)
+if old == new:
+    # We used to answer "Edit applied successfully." to an edit that changes
+    # nothing. In scikit-learn-13439 codestral sent the same no-op edit 13
+    # times, believed the confirmation each time, and burned the whole task:
+    # 30 iterations and 288,129 input tokens without the tests ever passing.
+    print("edit_file refused: old_str and new_str are identical; "
+          "the file is unchanged.")
+    raise SystemExit(4)
 updated = content.replace(old, new, 1)
 if path.suffix == ".py":
     try:
@@ -238,7 +246,11 @@ def read_file(filepath: str, start_line: int, end_line: int) -> str:
 
 
 def edit_file(filepath: str, old_str: str, new_str: str) -> str:
-    """Replace one unique fragment; refuse ambiguous matches or bad syntax."""
+    """Replace one unique fragment.
+
+    Refuses an ambiguous match, a result that would not compile, and an edit
+    that changes nothing, so a no-op never comes back as a success.
+    """
     logger.debug("Entrando en edit_file")
     return _run_program(_EDIT_PROGRAM, _real_path(filepath), old_str, new_str)
 
