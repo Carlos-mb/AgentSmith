@@ -246,9 +246,14 @@ async def run_swebench_agent(
         if time.monotonic() >= deadline:
             raise TimeoutError("Task expired before setup.")
 
+        # The default keeps the exam working when its .env forgets
+        # AGENT_SMITH_MODELS_CONFIG: without it every task ended with
+        # "Missing API key". "or" also covers the variable being defined
+        # but empty.
         provider = ProviderClient.from_environment(
             args.provider_url, args.model_name,
-            os.environ.get("AGENT_SMITH_MODELS_CONFIG"),
+            os.environ.get("AGENT_SMITH_MODELS_CONFIG")
+            or "configs/models_template.json",
         )
         config = load_sandbox_config(
             os.environ.get("AGENT_SMITH_SANDBOX_CONFIG"))

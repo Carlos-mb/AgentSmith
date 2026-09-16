@@ -2,6 +2,7 @@
 import asyncio
 import json
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -42,6 +43,22 @@ def test_configuration_selection_and_key_deduplication(tmp_path):
         ProviderClient.from_environment("https://example.invalid/v1", "different", path, {})
     with pytest.raises(RuntimeError, match="Missing API key"):
         ProviderClient(config(), {})
+
+
+def test_default_models_configuration_serves_both_exams():
+    """The adapters fall back to this path when the .env omits the variable."""
+    path = Path(__file__).resolve().parents[1] / "configs" / "models_template.json"
+    assert path.is_file(), "the adapters default to configs/models_template.json"
+
+    swebench = ProviderClient.from_environment(
+        "https://api.mistral.ai/v1", "codestral-2508", path, {"MISTRAL_API_KEY": "k"})
+    assert swebench.api_keys == ["k"]
+    assert swebench.config.stop_sequences == ["<end_code>", "Observation:"]
+
+    mbpp = ProviderClient.from_environment(
+        "https://openrouter.ai/api/v1", "inclusionai/ling-3.0-flash-vl:free", path,
+        {"OPENROUTER_API_KEY": "k"})
+    assert mbpp.api_keys == ["k"]
 
 
 def test_payload_and_measured_usage(monkeypatch):

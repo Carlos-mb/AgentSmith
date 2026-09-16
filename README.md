@@ -51,11 +51,15 @@ server and worker through exploration, an edit and `final_answer(get_patch())`.
 All six tasks of the exam's pool pass moulinette with at least one model
 ([evidence](benchmark_runs/swebench_20260914/README.md)), and the model
 comparison is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md). Extraction takes a closed
-```python block first and otherwise converts `<tool_call>` blocks into the
-equivalent Python calls, telling the model in its observation that the call was
-converted and executed. That conversion is not optional in practice: in a live
-SWE-bench run the selected model switched to that dialect after its first
-observation, and every later iteration produced nothing executable without it.
+```python block first and otherwise converts two tool-call dialects into the
+equivalent Python calls: `<tool_call>` with `<arg_key>`/`<arg_value>`, and
+`<tool_use>` with `<tool_name>`/`<arguments>`. A provider's own `tool_calls`
+field is rewritten into the second dialect in `providers.py` first, so a call
+becomes Python in one place only. Each conversion tells the model in its
+observation that the call was converted and executed. They are not optional in
+practice: in a live SWE-bench run the selected model switched to a tool-call
+dialect after its first observation, and every later iteration produced nothing
+executable without them.
 The subject's XML `<invoke>` and ReAct formats are still not handled; no model
 used here has produced them.
 Two validated MBPP tasks do not establish success on the full benchmark or the
@@ -503,7 +507,7 @@ change.
 
 The [benchmark report](BENCHMARK_REPORT.md) compares nine models on the same
 three SWE-bench tasks, with provider reliability, two intermediary metrics and
-four ablations. `codestral-2508` is the selected model, with
+five ablations. `codestral-2508` is the selected model, with
 `gemini-3.5-flash-lite` and `dots-studio/dots-3-note-preview:free` as backups on
 two other providers.
 Every figure is read from a `solution.json` kept under `benchmark_runs/`.
