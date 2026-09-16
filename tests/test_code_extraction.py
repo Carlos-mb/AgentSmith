@@ -24,6 +24,35 @@ print(result)
     assert feedback == ""
 
 
+def test_a_nested_fence_runs_the_inner_block():
+    # Both models write their Thought inside the fence and then open a second
+    # ```python. The first block closes against that opening, so it never
+    # parses: six saved MBPP requests executed nothing because of this.
+    llm_output = (
+        "```python\n"
+        "Thought: I will define frequency using the count method.\n"
+        "```python\n"
+        'solution = r"""def frequency(a, x):\n'
+        "    return a.count(x)\n"
+        '"""\n'
+        "print(run_tests(code=solution))\n"
+        "```\n"
+    )
+
+    code, feedback = extract_python_code(llm_output)
+
+    assert code.startswith('solution = r"""def frequency(a, x):')
+    assert code.endswith("print(run_tests(code=solution))")
+    assert feedback == ""
+
+
+def test_a_block_without_a_nested_fence_still_reports_its_syntax_error():
+    code, feedback = extract_python_code("```python\nThought: no code\n```\n")
+
+    assert code == ""
+    assert "syntax error" in feedback
+
+
 
 # def test_extract_py_fenced_block():
 #     llm_output = """

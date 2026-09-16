@@ -15,8 +15,10 @@ def extract_python_code(llm_output: str) -> tuple[str, str]:
     Accept a closed python or py fenced block and check its body with
     ast.parse. Empty responses, missing blocks, missing closing fences, and
     invalid syntax return empty source with a diagnostic. Valid source has
-    empty feedback. Raw Python and unlabelled blocks are unsupported;
-    malformed blocks are not repaired. An optional <end_code> marker belongs
+    empty feedback. Raw Python and unlabelled blocks are unsupported. The one
+    repair is a nested fence: when the block does not parse and a second
+    ```python opens inside it, the rest is retried, because models write their
+    Thought inside the first fence. An optional <end_code> marker belongs
     after the closing fence.
     """
     logger.debug("Entrando en extract_python_code")
@@ -57,6 +59,18 @@ def extract_python_code(llm_output: str) -> tuple[str, str]:
         except SyntaxError as exc:
             logger.warning("Sintaxis Python inválida en línea %s: %s",
                            exc.lineno, exc.msg)
+            # Both models sometimes write "Thought:" inside the fence and then
+            # open a second ```python with the real code. The first block ends
+            # against that second opening, so it never parses and the whole
+            # request was wasted: six of the saved MBPP steps, 3,795 input
+            # tokens, and two of them died later for lack of budget.
+            rest = llm_output[code_ends:]
+            if "```py" in rest:
+                retried, retried_feedback = extract_python_code(rest)
+                if retried:
+                    logger.info("Valla anidada reparada: se ejecuta el "
+                                "bloque interior")
+                    return retried, retried_feedback
             code = ""
             feedback = f"Python syntax error on line {exc.lineno}: {exc.msg}"
 
