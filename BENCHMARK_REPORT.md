@@ -1,6 +1,6 @@
 # Benchmark report — SWE-bench model comparison
 
-Nine models on the same three SWE-bench tasks, plus five ablations. Every
+Ten models on the same three SWE-bench tasks, plus five ablations. Every
 number below is read from a `solution.json` in `benchmark_runs/`, and every
 result was checked with `moulinette_eval validate swebench`, never with
 `--skip-metrics`. Failures are reported as they happened.
@@ -17,11 +17,19 @@ at most 600 output tokens per request; Gemini and Mistral 120 s timeout and 4
 retries, OpenRouter 60 s and 2 retries. `codestral-2508` stops at `<end_code>`
 and `Observation:` (section 5.4).
 
+`qwen/qwen3.8-27b` was measured on 17 September 2026 with the code of that day:
+the fixes of section 7, `reasoning_effort: "none"`, the same two stop sequences
+as `codestral-2508`, 120 s timeout and 10 retries. Groq's free tier allows 8,000
+tokens per minute, so a request is often refused with HTTP 429 before
+generating; the client waits as long as the provider's `retry-after` asks
+before trying again. Its wall-clock times are mostly that waiting.
+
 **Models and providers.** All free tiers: two API keys each for Google and
-OpenRouter at the time of the matrix, one for Mistral.
+OpenRouter at the time of the matrix, one for Mistral, one for Groq.
 
 | Provider | Endpoint | Models |
 | --- | --- | --- |
+| Groq | `api.groq.com/openai/v1` | `qwen/qwen3.8-27b` |
 | Mistral | `api.mistral.ai/v1` | `codestral-2508` |
 | Google AI Studio | `generativelanguage.googleapis.com/v1beta/openai` | `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3.5-flash`, `gemini-3.8-flash` |
 | OpenRouter | `openrouter.ai/api/v1` | `dots-studio/dots-3-note-preview:free`, `inclusionai/ling-3.0-flash-vl:free`, `nvidia/nemotron-3.5-lightning:free`, `google/gemma-4-31b-it:free` |
@@ -48,13 +56,19 @@ Why these three:
   `dots-3-note-preview` passed it in 26 iterations with 96,724 input tokens.
   `codestral-2508` passed it once in two runs with its final configuration:
   15 iterations and 55,614 input tokens in the real `exam_swebench.sh`, and
-  30 iterations with no final answer in section 5.4.
-  The evidence is in `benchmark_runs/swebench_20260914/sympy-14711/` and
-  `…/exam_codestral_20260915/sympy-14711/`.
+  30 iterations with no final answer in section 5.4, and a wrong patch in
+  a real `exam_swebench.sh` run on 17 September.
+  `qwen/qwen3.8-27b` passed it in all five of its attempts: three with one
+  Groq account (11, 10 and 7 iterations; 29,908, 31,466 and 19,644 input
+  tokens) and one in each of the two real `exam_swebench.sh` runs of
+  section 6.
+  The evidence is in `benchmark_runs/swebench_20260914/sympy-14711/`,
+  `…/exam_codestral_20260915/sympy-14711/` and
+  `…/qwen_20260917/one_account/sympy-14711/run1` to `run3`.
 
 **When.** `gemini-3.5-flash-lite` on 14 September 2026; the other seven models
 and the ablations on 15 September 2026; `codestral-2508` on the evening of 15
-September. One run per model × task.
+September; `qwen/qwen3.8-27b` on 17 September. One run per model × task.
 
 ## 2. Results
 
@@ -64,6 +78,7 @@ by `benchmark_runs/swebench_20260914/<path>/solution.json` next to its
 
 | Model | `sympy__sympy-13480` | `sympy__sympy-18189` | `django__django-11066` |
 | --- | --- | --- | --- |
+| `qwen3.8-27b` | **PASS** · 7 / 17,619 / 387 / 134 s | **PASS** · 7 / 21,466 / 543 / 164 s | **PASS** · 5 / 15,363 / 216 / 78 s |
 | `codestral-2508` | **PASS** · 5 / 9,409 / 200 / 13 s | **PASS** · 4 / 11,234 / 228 / 25 s | **PASS** · 5 / 13,496 / 241 / 13 s |
 | `gemini-3.5-flash-lite` | **PASS** · 8 / 27,767 / 455 / 24 s | **PASS** · 7 / 23,054 / 411 / 83 s | **PASS** · 7 / 26,604 / 413 / 13 s |
 | `dots-3-note-preview` | **PASS** · 10 / 31,534 / 1,136 / 37 s | **PASS** · 11 / 35,957 / 1,391 / 38 s | **PASS** · 6 / 20,621 / 829 / 25 s |
@@ -78,7 +93,8 @@ by `benchmark_runs/swebench_20260914/<path>/solution.json` next to its
 success. ² Input budget exhausted. ³ Provider error: HTTP 503 or 429. ⁴ Task
 deadline reached. ⁵ A request timed out.
 
-Paths: `codestral-2508` → `ablation/observation_stop/codestral-2508/<task>/`;
+Paths: `qwen3.8-27b` → `qwen_20260917/one_account/<task>/`;
+`codestral-2508` → `ablation/observation_stop/codestral-2508/<task>/`;
 `gemini-3.5-flash-lite` → `<task>/`; every other model →
 `comparison/<model>/<task>/`, where the directory is the model id with `/` and
 `:` replaced by `_`. The task directories are `sympy-13480`, `sympy-18189` and
@@ -88,6 +104,7 @@ Totals over the three tasks:
 
 | Model | Passed | Iterations | Input tokens | Output tokens | Time |
 | --- | ---: | ---: | ---: | ---: | ---: |
+| `qwen3.8-27b` | 3/3 | 19 | 54,448 | 1,146 | 376 s |
 | `codestral-2508` | 3/3 | 14 | 34,139 | 669 | 51 s |
 | `gemini-3.5-flash-lite` | 3/3 | 22 | 77,425 | 1,279 | 120 s |
 | `dots-3-note-preview` | 3/3 | 27 | 88,112 | 3,356 | 100 s |
@@ -109,6 +126,7 @@ Read from the per-step fields `request_time_ms` and `retries`.
 
 | Model | Steps | Retries | Steps with no usable text | Availability | Avg time per step | Runs ended by the provider |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `qwen3.8-27b` | 19 | 15 | 0 | 55.9% | 0.5 s† | 0/3 |
 | `codestral-2508` | 14 | 0 | 0 | 100% | 1.1 s | 0/3 |
 | `gemini-3.5-flash-lite` | 22 | 1 | 0 | 95.7% | 4.3 s | 0/3 |
 | `dots-3-note-preview` | 27 | 0 | 0 | 100% | 2.8 s | 0/3 |
@@ -122,8 +140,16 @@ Read from the per-step fields `request_time_ms` and `retries`.
 \* Overstated. A request that times out ends the run before it is recorded as a
 step, so nemotron's two timeouts are missing from both columns.
 
+† Request time only. The 15 retries are HTTP 429 refusals from Groq's 8,000
+tokens-per-minute limit, and the waits the provider asked for before each retry
+are not in `request_time_ms`; they are why its three runs took 376 s.
+
 What stands out:
 
+- **`qwen3.8-27b` is limited by its free tier, not by the model.** Every
+  retry is a 429 refused before generating, so it costs no tokens, only time.
+  None of its runs ended because of the provider: waiting as long as
+  `retry-after` asks lets the next attempt through.
 - **`gemini-3.1-flash-lite` answers with empty text more often than not.** 29
   of its 54 steps had no usable text even after four retries; in
   `sympy-13480`, ten steps in a row. The retries also count against the input
@@ -152,6 +178,7 @@ file that appears in the submitted diff.
 
 | Model | 13480 | 18189 | 11066 |
 | --- | ---: | ---: | ---: |
+| `qwen3.8-27b` | 2 | 2 | 2 |
 | `codestral-2508` | 2 | 1 | 2 |
 | `gemini-3.5-flash-lite` | 2 | 1 | 2 |
 | `dots-3-note-preview` | 2 | 3 | 2 |
@@ -171,6 +198,9 @@ passed moulinette. In these runs its own output could not confirm this
 
 | Run | Iterations after tests pass | Input tokens spent after tests pass |
 | --- | ---: | ---: |
+| `qwen3.8-27b` · 13480 | 1 | 3,994 of 17,619 (23%) |
+| `qwen3.8-27b` · 18189 | 1 | 4,059 of 21,466 (19%) |
+| `qwen3.8-27b` · 11066 | 1 | 4,162 of 15,363 (27%) |
 | `codestral-2508` · 13480 | 1 | 2,713 of 9,409 (29%) |
 | `codestral-2508` · 18189 | 1 | 3,396 of 11,234 (30%) |
 | `codestral-2508` · 11066 | 1 | 3,576 of 13,496 (26%) |
@@ -411,16 +441,31 @@ to `run4/`.
 
 ## 6. Conclusions
 
-**Selected: `codestral-2508` (Mistral).** 3/3 on the matrix tasks with 14
-iterations and 34,139 input tokens, less than half of `gemini-3.5-flash-lite`'s
-77,425. It also passed `xarray-4629` and `scikit-learn-13439` in 5 iterations
+**Selected: `qwen/qwen3.8-27b` (Groq).** It is the only model that solves
+`sympy__sympy-14711` reliably: five passes in five attempts, against one in
+three for `codestral-2508`, the pool task that decides whether a run scores 2/3
+or 3/3. With one Groq account it passed all six pool tasks: 3/3 on the matrix
+(19 iterations, 54,448 input tokens), `xarray-4629` in 6 iterations,
+`scikit-learn-13439` in 8, and `sympy-14711` three times. It submits in the step
+right after its tests pass. In the real `exam_swebench.sh` it scored 2/3 with
+two Groq accounts, losing `scikit-learn-13439` to 429 retries when the client
+still waited at most 5 s between keys, and 3/3 with three accounts once the
+client waited as long as `retry-after` asked (`14711`, `xarray-4629`, `18189`;
+11, 7 and 7 iterations; 93, 62 and 64 s). Its costs: about 60% more input
+tokens than `codestral-2508` on the matrix, several minutes per task on one
+account, and a free tier of 8,000 tokens per minute and 200,000 per day per
+account. Evidence: `qwen_20260917/`.
+
+**First backup: `codestral-2508` (Mistral).** 3/3 on the matrix tasks with 14
+iterations and 34,139 input tokens, the fewest of all, less than half of
+`gemini-3.5-flash-lite`'s 77,425. It also passed `xarray-4629` and `scikit-learn-13439` in 5 iterations
 each, and scored 3/3 in the real `exam_swebench.sh`, including
 `sympy__sympy-14711` (evidence: `exam_codestral_20260915/`). It submits in the
 step right after its tests pass, and it needed no retry: its free tier allowed
 125 requests and 625,000 tokens per minute. It depends on section 5.4's stop
 sequence; without it, it scored 4/6.
 
-**First backup: `gemini-3.5-flash-lite`.** It passed all nine of its runs on
+**Second backup: `gemini-3.5-flash-lite`.** It passed all nine of its runs on
 the matrix tasks, three on 14 September plus six in the ablation, with one
 retry in 76 steps, and 2/3 twice in the real `exam_swebench.sh`. It used the
 fewest input tokens of the first eight models (77,425), and it sits on a
@@ -429,19 +474,19 @@ attempts examined step by step, it wrote its fix as a function defined inside
 the sandbox instead of editing the file, reached `edit_file` only at step 25
 or 28, and broke the tests.
 
-**Second backup: `dots-studio/dots-3-note-preview:free`.** 3/3, with 100%
+**Third backup: `dots-studio/dots-3-note-preview:free`.** 3/3, with 100%
 availability and no retries. It uses about 14% more input tokens and 2.6× the
 output tokens of `gemini-3.5-flash-lite`, on a third provider with a separate
 quota. It passed `sympy__sympy-14711` once.
 
-**Usable third: `inclusionai/ling-3.0-flash-vl:free`.** It is the fastest per
+**Also usable: `inclusionai/ling-3.0-flash-vl:free`.** It is the fastest per
 step (1.5 s), cheap, and passed 2/3. Its failure was a submission without a
 diff, which the agent records as a failure rather than a false pass.
 
 **Discarded, based on this data:**
 
-- `gemini-3.1-flash-lite`: it passes 2/3, but with 6.7× the input tokens of the
-  selected model (515,988 against 77,425), because more than half its steps
+- `gemini-3.1-flash-lite`: it passes 2/3, but with 6.7× the input tokens of
+  `gemini-3.5-flash-lite` (515,988 against 77,425), because more than half its steps
   come back empty. It exhausted the input budget on `sympy-18189`.
 - `gemini-3.5-flash` and `gemini-3.8-flash`: 0/3, with availability of 41% and
   44% on the free tier. `gemini-3.8-flash` also cannot fit 30 iterations into
@@ -457,6 +502,9 @@ availability changes by the hour. The rows for `gemini-3.5-flash`,
 least as much as the models. Section 5.1 shows the same configuration varying
 by up to four iterations per task. `codestral-2508` has one run per task with
 its final configuration, plus the three of the exam run, all on one evening.
+`qwen3.8-27b` was measured on one day, and free tiers change: Groq no longer
+offered `llama-3.3-70b-versatile` on 17 September. Both should be measured
+again before the evaluation.
 
 **Cost.** Every run used free tiers and cost nothing. The token columns are
 what a paid tier would bill.
@@ -500,5 +548,6 @@ uv run moulinette_eval validate swebench \
 
 OpenRouter models use `--provider-url https://openrouter.ai/api/v1`;
 `codestral-2508` uses `--provider-url https://api.mistral.ai/v1` and reads
-`MISTRAL_API_KEY`. The task
+`MISTRAL_API_KEY`; `qwen/qwen3.8-27b` uses `--provider-url
+https://api.groq.com/openai/v1` and reads `GROQ_API_KEY`. The task
 images were pulled beforehand, so the measured times exclude the download.
