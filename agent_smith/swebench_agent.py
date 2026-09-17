@@ -12,13 +12,12 @@ import sys
 import time
 import uuid
 
-import anyio
-
 from agent_smith.agent_loop import run_agent_loop
 from agent_smith.mcp_client import MCPClient
 from agent_smith.models import AgentLimits, SolutionOutput, SWEBenchTaskInput
 from agent_smith.providers import ProviderClient
-from agent_smith.sandbox import SandboxSession, load_sandbox_config
+from agent_smith.sandbox import load_sandbox_config
+from agent_smith.sandbox_session import SandboxSession
 
 logger = get_logger('agent_smith.swebench_agent')
 
@@ -227,7 +226,7 @@ def _build_swebench_limits(max_iterations: int) -> AgentLimits:
     )
 
 
-async def run_swebench_agent(
+def run_swebench_agent(
     task: SWEBenchTaskInput, args: argparse.Namespace, *, started_at: float,
 ) -> SolutionOutput:
     """Prepare one testbed, run the shared loop and keep the whole patch."""
@@ -259,7 +258,7 @@ async def run_swebench_agent(
             os.environ.get("AGENT_SMITH_SANDBOX_CONFIG"))
 
         environment = SWEEnvironment(task, deadline=deadline)
-        await anyio.to_thread.run_sync(environment.start)
+        environment.start()
 
         server_environment = {name: os.environ[name] for name in (
             "PATH", "HOME", "DOCKER_HOST", "DOCKER_TLS_VERIFY",
@@ -273,7 +272,7 @@ async def run_swebench_agent(
             environment=server_environment,
         )
 
-        session, manual = await client.start(deadline=deadline)
+        manual = client.start(deadline=deadline)
         logger.info("MCP listo: %s herramientas descubiertas",
                     len(manual.tools))
         advertised = {tool["name"] for tool in manual.tools}
@@ -283,12 +282,11 @@ async def run_swebench_agent(
                                + ", ".join(missing))
 
         result.system_prompt = build_swebench_system_prompt(manual.as_text())
-        sandbox = SandboxSession(config, session, manual)
-        with anyio.fail_after(max(0, deadline - time.monotonic())):
-            await sandbox.start()
+        sandbox = SandboxSession(config, client, manual)
+        sandbox.start()
         logger.info("Trabajador preparado; comenzando "
                     "Thought -> Code -> Observation")
-        result = await run_agent_loop(
+        result = run_agent_loop(
             task_id=task.instance_id, benchmark="swebench",
             system_prompt=result.system_prompt,
             task_prompt=build_swebench_task_prompt(task),
@@ -316,17 +314,14 @@ async def run_swebench_agent(
         for resource in (sandbox, client):
             if resource is not None:
                 try:
-                    await resource.close()
+                    resource.close()
                 except Exception as exc:
                     logger.error("No se pudo cerrar %s: %s",
                                  type(resource).__name__, exc)
                     cleanup_errors.append(f"{type(resource).__name__}: {exc}")
         if environment is not None:
             try:
-                # The container must die even if time ran out or we are being
-                # cancelled: hence the shield.
-                with anyio.CancelScope(shield=True):
-                    await anyio.to_thread.run_sync(environment.close)
+                environment.close()
             except Exception as exc:
                 logger.error("No se pudo eliminar el contenedor: %s", exc)
                 cleanup_errors.append(f"Docker cleanup: {exc}")

@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from agent_smith.logging_config import (
-    LoggingArgumentParser, configure_logging, get_logger,
-)
+from agent_smith.logging_config import configure_logging, get_logger
 
 import argparse
 import ast
-import asyncio
 import codeop
 import os
 import shlex
@@ -17,7 +14,8 @@ from pathlib import Path
 from typing import Sequence
 
 from agent_smith.mcp_client import MCPClient
-from agent_smith.sandbox import SandboxSession, load_sandbox_config
+from agent_smith.sandbox import load_sandbox_config
+from agent_smith.sandbox_session import SandboxSession
 
 logger = get_logger('agent_smith.sandbox_cli')
 
@@ -26,7 +24,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse sandbox command-line arguments."""
     logger.debug("Entrando en parse_arguments")
 
-    parser = LoggingArgumentParser(
+    parser = argparse.ArgumentParser(
         description="Run the interactive sandbox."
     )
 
@@ -80,10 +78,10 @@ def _build_mcp_client(args: argparse.Namespace) -> MCPClient | None:
     return None
 
 
-async def _run_entry(session: SandboxSession, code: str) -> None:
+def _run_entry(session: SandboxSession, code: str) -> None:
     """Execute one complete entry and print what the sandbox reports."""
     logger.debug("Entrando en _run_entry")
-    execution = await session.execute(code)
+    execution = session.execute(code)
     if execution.output:
         print(execution.output, end="")
     if execution.error:
@@ -92,11 +90,11 @@ async def _run_entry(session: SandboxSession, code: str) -> None:
         print("Final answer: " + execution.final_answer)
     if execution.worker_failed:
         print("Worker restarted; variables were lost.")
-        await session.close()
-        await session.start()
+        session.close()
+        session.start()
 
 
-async def run_script(session: SandboxSession, text: str | None = None) -> int:
+def run_script(session: SandboxSession, text: str | None = None) -> int:
     """Execute a piped script one top-level statement at a time.
 
     Line-by-line reading cannot handle a pasted file: a blank line inside a
@@ -118,11 +116,11 @@ async def run_script(session: SandboxSession, text: str | None = None) -> int:
         statement = "\n".join(lines[first - 1:node.end_lineno])
         if statement.strip() == "exit":
             return 0
-        await _run_entry(session, statement)
+        _run_entry(session, statement)
     return 0
 
 
-async def run_repl(session: SandboxSession) -> int:
+def run_repl(session: SandboxSession) -> int:
     """Read and execute persistent Python entries until exit or EOF."""
     logger.debug("Entrando en run_repl")
     lines: list[str] = []
@@ -134,7 +132,7 @@ async def run_repl(session: SandboxSession) -> int:
             # With redirected input the last block arrives without a blank
             # line.
             if lines:
-                await _run_entry(session, "\n".join(lines))
+                _run_entry(session, "\n".join(lines))
             return 0
 
         if not lines and line == "exit":
@@ -156,38 +154,36 @@ async def run_repl(session: SandboxSession) -> int:
             continue
 
         lines.clear()
-        await _run_entry(session, code)
+        _run_entry(session, code)
 
 
-async def _run_sandbox(args: argparse.Namespace) -> int:
-    """Own MCP and worker lifetimes in the same async task as the REPL."""
+def _run_sandbox(args: argparse.Namespace) -> int:
+    """Own the MCP client and the worker, and close both at the end."""
     logger.debug("Entrando en _run_sandbox")
     config = load_sandbox_config(args.config)
     client = _build_mcp_client(args)
     session = None
     manual = None
     try:
-        mcp_session = None
         if client is not None:
-            mcp_session, manual = await client.start()
-        session = SandboxSession(config, mcp_session=mcp_session,
-                                 manual=manual)
-        await session.start()
+            manual = client.start()
+        session = SandboxSession(config, mcp=client, manual=manual)
+        session.start()
         if manual is not None:
             print(manual.as_text())
         if sys.stdin.isatty():
-            return await run_repl(session)
-        return await run_script(session)
+            return run_repl(session)
+        return run_script(session)
     finally:
         cleanup_errors = []
         if session is not None:
             try:
-                await session.close()
+                session.close()
             except Exception as exc:
                 cleanup_errors.append(f"sandbox: {exc}")
         if client is not None:
             try:
-                await client.close()
+                client.close()
             except Exception as exc:
                 cleanup_errors.append(f"MCP: {exc}")
         if cleanup_errors:
@@ -198,12 +194,12 @@ async def _run_sandbox(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Parse CLI arguments and run the async sandbox with graceful errors."""
+    """Parse CLI arguments and run the sandbox with graceful errors."""
     configure_logging()
     logger.debug("Entrando en main")
     args = parse_arguments(argv)
     try:
-        return asyncio.run(_run_sandbox(args))
+        return _run_sandbox(args)
     except Exception as exc:
         logger.error("Error: %s", exc)
         return 1

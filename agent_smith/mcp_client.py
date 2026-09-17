@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
-from agent_smith.logging_config import LOG_LEVEL_ENV, get_logger
+from agent_smith.logging_config import LOG_FILE_ENV, LOG_LEVEL_ENV, get_logger
 
+import asyncio
+import concurrent.futures
 from contextlib import AsyncExitStack
 from datetime import timedelta
+import json
 import keyword
 import logging
 import builtins
 import os
 import sys
+import threading
 import time
 
-import anyio
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
-from urllib.parse import urlparse
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -150,8 +152,18 @@ class MCPManual:
         return manual
 
 
+
 class MCPClient:
-    """Open and close MCP in the same asynchronous task as its caller."""
+    """Keep one MCP session open and call it from ordinary synchronous code.
+
+    The MCP SDK only offers async functions. Instead of making the whole agent
+    async, this class runs an asyncio event loop in a background thread:
+
+    - one coroutine (_own_session) opens the session, waits until close() is
+      called and then closes it, because the SDK must open and close its
+      contexts in the same asyncio task;
+    - every request (call) is sent to that loop and the caller just waits.
+    """
 
     def __init__(
         self,
@@ -160,156 +172,196 @@ class MCPClient:
         server_url: str | None = None,
         environment: Mapping[str, str] | None = None,
     ) -> None:
-        """Validate one transport and copy its configuration without I/O.
-
-        Accept a stdio argument sequence or an HTTP(S) server URL, exclusively.
-        The environment mapping is reserved for the separate MCP server.
-        Invalid configuration raises ValueError before any connection exists.
-        """
+        """Store which server to use: a stdio command or an HTTP URL."""
         logger.debug("Entrando en MCPClient.__init__")
-
-        if stdio_command is not None and server_url is not None:
-            raise ValueError("Exactly one MCP transport must be provided.")
-
-        if stdio_command is None and server_url is None:
-            raise ValueError("Exactly one MCP transport must be provided.")
-
-        self.stdio_command: list[str] | None = None
-        self.server_url: str | None = None
-
-        if stdio_command is not None:
-            if not stdio_command:
-                raise ValueError("stdio_command cannot be empty.")
-
-            if not stdio_command[0].strip():
-                raise ValueError("The stdio executable cannot be empty.")
-
-            self.stdio_command = list(stdio_command)
-
-        else:
-            parsed_url = urlparse(server_url)
-
-            if (
-                parsed_url.scheme not in ("http", "https")
-                or not parsed_url.netloc
-            ):
-                raise ValueError(
-                    "server_url must be a valid HTTP or HTTPS URL."
-                )
-
-            self.server_url = server_url
-
-        self.environment = (
-            dict(environment) if environment is not None else {}
-        )
-
-        self._stack = None
+        self.stdio_command = list(stdio_command) if stdio_command else None
+        self.server_url = server_url
+        self.environment = dict(environment or {})
+        self._loop = None
+        self._thread = None
+        self._owner = None
         self._session = None
+        self._stop = None
+        self._closed = threading.Event()
         logger.debug("Configuración MCP preparada: transporte=%s",
                      "stdio" if self.stdio_command else "HTTP")
 
-    async def start(
-        self, *, deadline: float | None = None,
-    ) -> tuple[ClientSession, MCPManual]:
-        """Open the transport and discover its capabilities with the SDK."""
+    def start(self, *, deadline: float | None = None) -> MCPManual:
+        """Start the background loop, open the session and discover it."""
         logger.debug("Entrando en MCPClient.start")
         logger.info("Abriendo MCP y solicitando capacidades al servidor")
-        if self._stack is not None:
-            raise RuntimeError("MCP client is already started.")
-        remaining = 30.0 if deadline is None else deadline - time.monotonic()
-        if remaining <= 0:
+        timeout = 30.0 if deadline is None else deadline - time.monotonic()
+        if timeout <= 0:
             raise TimeoutError("Task expired before MCP startup.")
-        self._stack = AsyncExitStack()
+
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._loop.run_forever,
+                                        daemon=True)
+        self._thread.start()
+        self._stop = asyncio.Event()
+        self._closed.clear()
+        ready = concurrent.futures.Future()
+        self._owner = asyncio.run_coroutine_threadsafe(
+            self._own_session(ready, timeout), self._loop)
         try:
-            if self.stdio_command is not None:
-                environment = dict(self.environment)
-                environment.setdefault(LOG_LEVEL_ENV,
-                                       os.environ.get(LOG_LEVEL_ENV, ""))
-                parameters = StdioServerParameters(
-                    command=self.stdio_command[0], args=self.stdio_command[1:],
-                    env=environment,
-                )
-                read, write = await self._stack.enter_async_context(
-                    stdio_client(parameters, errlog=sys.stderr),
-                )
-            else:
-                read, write, _ = await self._stack.enter_async_context(
-                    streamable_http_client(self.server_url),
-                )
-            self._session = await self._stack.enter_async_context(
-                ClientSession(
-                    read, write,
-                    read_timeout_seconds=timedelta(seconds=remaining),
-                ))
-            # These scopes cover requests only, never the lifetime of SDK
-            # contexts.
-            timeout = (remaining if deadline is None
-                       else max(0, deadline - time.monotonic()))
-            with anyio.fail_after(timeout):
-                logger.debug("MCP ENVIADO [initialize]: inicialización "
-                             "mediante el SDK")
-                initialized = await self._session.initialize()
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug("MCP RECIBIDO [initialize]:\n%s",
-                                 initialized.model_dump_json(
-                                     indent=2, by_alias=True))
-                logger.debug("MCP initialize completado; descubriendo "
-                             "herramientas, recursos y prompts")
-                capabilities = initialized.capabilities
-                tools, resources, templates, prompts = [], [], [], []
-                for capability, method, field, destination in (
-                    (capabilities.tools, self._session.list_tools, "tools",
-                     tools),
-                    (capabilities.resources, self._session.list_resources,
-                     "resources", resources),
-                    (capabilities.resources,
-                     self._session.list_resource_templates,
-                     "resourceTemplates", templates),
-                    (capabilities.prompts, self._session.list_prompts,
-                     "prompts", prompts),
-                ):
-                    if capability is None:
-                        logger.debug("El servidor no anuncia la capacidad "
-                                     "de %s", field)
-                        continue
-                    cursor = None
-                    while True:
-                        logger.debug("MCP ENVIADO [listado %s]: cursor=%r",
-                                     field, cursor)
-                        page = await method(
-                            params=PaginatedRequestParams(cursor=cursor))
-                        if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug(
-                                "MCP RECIBIDO [listado %s]:\n%s", field,
-                                page.model_dump_json(indent=2, by_alias=True))
-                        destination.extend(
-                            item.model_dump(mode="json", by_alias=True)
-                            for item in getattr(page, field)
-                        )
-                        cursor = page.nextCursor
-                        if not cursor:
-                            break
-                    logger.debug("Descubrimiento %s completado: %s elementos",
-                                 field, len(destination))
-            logger.info("MCP conectado y descubrimiento completado")
-            return self._session, MCPManual(
-                initialized.instructions or "", tools, resources, templates,
-                prompts,
-            )
-        except BaseException:
-            logger.exception("Fallo al iniciar MCP; cerrando contextos "
-                             "abiertos")
-            await self.close()
+            return ready.result(timeout=timeout)
+        except BaseException as exc:
+            logger.error("Fallo al iniciar MCP; cerrando: %s", exc)
+            self._owner.cancel()
+            self.close()
+            if isinstance(exc, concurrent.futures.TimeoutError):
+                raise TimeoutError("MCP startup timed out.") from None
             raise
 
-    async def close(self) -> None:
-        """Close SDK contexts in their owning task, in reverse order."""
-        logger.debug("Entrando en MCPClient.close")
-        logger.info("Cerrando sesión y transporte MCP")
-        stack = self._stack
+    async def _own_session(self, ready: concurrent.futures.Future,
+                           timeout: float) -> None:
+        """Open the session, publish the manual, wait for close(), close."""
+        logger.debug("Entrando en MCPClient._own_session")
         try:
-            if stack is not None:
-                await stack.aclose()
+            async with AsyncExitStack() as stack:
+                if self.stdio_command is not None:
+                    environment = dict(self.environment)
+                    # The server logs like we do, into the same file.
+                    for name in (LOG_LEVEL_ENV, LOG_FILE_ENV):
+                        environment.setdefault(name,
+                                               os.environ.get(name, ""))
+                    parameters = StdioServerParameters(
+                        command=self.stdio_command[0],
+                        args=self.stdio_command[1:], env=environment,
+                    )
+                    read, write = await stack.enter_async_context(
+                        stdio_client(parameters, errlog=sys.stderr))
+                else:
+                    read, write, _ = await stack.enter_async_context(
+                        streamable_http_client(self.server_url))
+                session = await stack.enter_async_context(ClientSession(
+                    read, write,
+                    read_timeout_seconds=timedelta(seconds=timeout),
+                ))
+                manual = await asyncio.wait_for(_discover(session), timeout)
+                self._session = session
+                ready.set_result(manual)
+                logger.info("MCP conectado y descubrimiento completado")
+                await self._stop.wait()
+                logger.info("Cerrando sesión y transporte MCP")
+        except Exception as exc:
+            if not ready.done():
+                ready.set_exception(exc)
+            else:
+                logger.error("La sesión MCP terminó con un error: %s", exc)
         finally:
-            self._stack = self._session = None
+            self._session = None
+            self._closed.set()
+
+    def call(self, operation: str, arguments: dict[str, Any],
+             timeout: float | None = None) -> dict[str, Any]:
+        """Run one MCP operation and return {"result": ...} or {"error": ...}.
+
+        Tool errors come back as data so the generated code can see them;
+        a lost connection raises, because the task cannot continue.
+        """
+        logger.debug("Entrando en MCPClient.call")
+        from mcp.shared.exceptions import McpError
+
+        if self._session is None:
+            raise RuntimeError("MCP client is not started.")
+        methods = {
+            "call_tool": self._session.call_tool,
+            "read_resource": self._session.read_resource,
+            "get_prompt": self._session.get_prompt,
+        }
+        if operation not in methods:
+            raise ValueError(f"Unknown MCP operation: {operation}")
+        logger.info("Ejecutando MCP %s; herramienta/prompt=%s",
+                    operation, arguments.get("name", "—"))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("MCP ENVIADO [%s]:\n%s", operation,
+                         json.dumps(arguments, ensure_ascii=False, indent=2))
+        future = asyncio.run_coroutine_threadsafe(
+            methods[operation](**arguments), self._loop)
+        try:
+            response = future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise TimeoutError("MCP request timed out.") from None
+        except McpError as exc:
+            logger.warning("El SDK MCP devolvió un error: código=%s",
+                           exc.error.code)
+            if exc.error.code not in (-32601, -32602):
+                raise
+            return {"error": str(exc)}
+        data = response.model_dump(mode="json", by_alias=True)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("MCP RECIBIDO [%s]:\n%s", operation,
+                         json.dumps(data, ensure_ascii=False, indent=2))
+        if data.get("isError"):
+            logger.warning("La herramienta MCP informó un error; se devolverá "
+                           "como observación")
+            return {"error": json.dumps(data, ensure_ascii=False)}
+        # Generated code expects text: a server that returns a dict delivers it
+        # here already serialised as JSON.
+        content = data.get("content", data.get("contents"))
+        if content and len(content) == 1 and "text" in content[0]:
+            return {"result": content[0]["text"]}
+        return {"result": data}
+
+    def close(self) -> None:
+        """Ask the owner coroutine to close the session, then stop the loop."""
+        logger.debug("Entrando en MCPClient.close")
+        if self._loop is None:
+            return
+        try:
+            self._loop.call_soon_threadsafe(self._stop.set)
+            if not self._closed.wait(10):
+                logger.warning("MCP no se cerró a tiempo; cancelando")
+                self._owner.cancel()
+                self._closed.wait(5)
+        finally:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join(5)
+            if not self._thread.is_alive():
+                self._loop.close()
+            self._loop = self._thread = self._owner = self._stop = None
+            self._session = None
         logger.debug("Contextos MCP cerrados")
+
+
+async def _discover(session: ClientSession) -> MCPManual:
+    """Initialize the session and list its tools, resources and prompts."""
+    logger.debug("Entrando en _discover")
+    logger.debug("MCP ENVIADO [initialize]: inicialización mediante el SDK")
+    initialized = await session.initialize()
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("MCP RECIBIDO [initialize]:\n%s",
+                     initialized.model_dump_json(indent=2, by_alias=True))
+    capabilities = initialized.capabilities
+    tools, resources, templates, prompts = [], [], [], []
+    for capability, method, field, destination in (
+        (capabilities.tools, session.list_tools, "tools", tools),
+        (capabilities.resources, session.list_resources, "resources",
+         resources),
+        (capabilities.resources, session.list_resource_templates,
+         "resourceTemplates", templates),
+        (capabilities.prompts, session.list_prompts, "prompts", prompts),
+    ):
+        if capability is None:
+            logger.debug("El servidor no anuncia la capacidad de %s", field)
+            continue
+        cursor = None
+        while True:
+            logger.debug("MCP ENVIADO [listado %s]: cursor=%r", field, cursor)
+            page = await method(params=PaginatedRequestParams(cursor=cursor))
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("MCP RECIBIDO [listado %s]:\n%s", field,
+                             page.model_dump_json(indent=2, by_alias=True))
+            destination.extend(
+                item.model_dump(mode="json", by_alias=True)
+                for item in getattr(page, field)
+            )
+            cursor = page.nextCursor
+            if not cursor:
+                break
+        logger.debug("Descubrimiento %s completado: %s elementos",
+                     field, len(destination))
+    return MCPManual(initialized.instructions or "", tools, resources,
+                     templates, prompts)

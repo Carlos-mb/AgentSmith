@@ -1,10 +1,10 @@
 """Fake HTTP responses verify actual request construction and accounting."""
-import asyncio
 import json
 import time
 from pathlib import Path
 
 import httpx
+import openai
 import pytest
 
 from agent_smith.providers import ProviderClient, ProviderConfig
@@ -21,16 +21,15 @@ def answer(text="```python\nprint(1)\n```", incoming=100, outgoing=20):
 
 
 def mock_http(monkeypatch, handler):
-    original = httpx.AsyncClient
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr("agent_smith.providers.httpx.AsyncClient", lambda **kwargs: original(
-        transport=transport, **kwargs))
+    monkeypatch.setattr("agent_smith.providers.OpenAI", lambda **kwargs: openai.OpenAI(
+        http_client=httpx.Client(transport=transport), **kwargs))
 
 
 def complete(client, **kwargs):
     parameters = dict(max_input_tokens=6000, max_output_tokens=1500, deadline=time.monotonic() + 10)
     parameters.update(kwargs)
-    return asyncio.run(client.complete([{"role": "user", "content": "hello"}], **parameters))
+    return client.complete([{"role": "user", "content": "hello"}], **parameters)
 
 
 def test_configuration_selection_and_key_deduplication(tmp_path):
@@ -185,13 +184,12 @@ def test_transport_error_does_not_leak_credentials_or_retry(monkeypatch):
 
 
 def test_a_request_timeout_ends_with_an_explicit_message(monkeypatch):
-    # asyncio.wait_for lanza asyncio.TimeoutError, que en 3.10 no es TimeoutError.
-    async def expire(*args, **kwargs):
-        raise asyncio.TimeoutError()
-    monkeypatch.setattr(ProviderClient, "_send_request", expire)
+    def handler(request):
+        raise httpx.ReadTimeout("slow provider")
+    mock_http(monkeypatch, handler)
     result = complete(ProviderClient(config(), {"KEY_ONE": "fake-one"}))
     assert result.request_count == 1 and not result.usage_complete
-    assert result.error == "LLM request failed (TimeoutError); token usage is unknown."
+    assert result.error == "LLM request failed (APITimeoutError); token usage is unknown."
 
 
 def test_provider_error_keeps_its_diagnosis_without_leaking_keys(monkeypatch):
@@ -225,10 +223,10 @@ def test_real_over_budget_usage_is_kept(monkeypatch):
 def test_long_history_does_not_count_each_byte_as_a_token(monkeypatch):
     mock_http(monkeypatch, lambda request: httpx.Response(200, json=answer(incoming=1600)))
     client = ProviderClient(config(), {"KEY_ONE": "fake-one"})
-    result = asyncio.run(client.complete(
+    result = client.complete(
         [{"role": "user", "content": "some Python code and observations\n" * 180}],
         max_input_tokens=4500, max_output_tokens=500, deadline=time.monotonic() + 10,
-    ))
+    )
     assert result.request_count == 1 and result.error is None
     assert result.input_tokens == 1600
 
@@ -323,3 +321,65 @@ def test_a_persistent_503_reports_the_status_without_fake_subtotals(monkeypatch)
     assert "HTTP 503" in (result.error or "")
     assert "subtotals" not in (result.error or "")
     assert result.input_tokens == 0 and result.output_tokens == 0
+
+
+def test_a_429_waits_what_the_provider_asks_when_there_is_no_other_key(monkeypatch):
+    calls, waits = [], []
+    def handler(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(429, headers={"retry-after": "20"}, json={})
+        return httpx.Response(200, json=answer())
+    mock_http(monkeypatch, handler)
+    monkeypatch.setattr("agent_smith.providers.time.sleep", waits.append)
+    result = complete(ProviderClient(config(max_retries=1), {"KEY_ONE": "one"}),
+                      deadline=time.monotonic() + 100)
+    assert len(waits) == 1 and 19 < waits[0] <= 20
+    assert result.error is None and result.request_count == 2
+
+
+def test_a_429_switches_to_a_free_key_without_waiting(monkeypatch):
+    keys, waits = [], []
+    def handler(request):
+        keys.append(request.headers["Authorization"])
+        if len(keys) == 1:
+            return httpx.Response(429, headers={"retry-after": "20"}, json={})
+        return httpx.Response(200, json=answer())
+    mock_http(monkeypatch, handler)
+    monkeypatch.setattr("agent_smith.providers.time.sleep", waits.append)
+    client = ProviderClient(config(max_retries=1), {"KEY_ONE": "one", "KEY_TWO": "two"})
+    result = complete(client, deadline=time.monotonic() + 100)
+    assert keys == ["Bearer one", "Bearer two"] and waits == []
+    assert result.error is None
+
+
+def test_a_key_is_not_reused_before_the_time_it_asked_for(monkeypatch):
+    keys, waits = [], []
+    def handler(request):
+        keys.append(request.headers["Authorization"])
+        if len(keys) <= 2:
+            seconds = "10" if len(keys) == 1 else "30"
+            return httpx.Response(429, headers={"retry-after": seconds}, json={})
+        return httpx.Response(200, json=answer())
+    mock_http(monkeypatch, handler)
+    monkeypatch.setattr("agent_smith.providers.time.sleep", waits.append)
+    client = ProviderClient(config(max_retries=2), {"KEY_ONE": "one", "KEY_TWO": "two"})
+    result = complete(client, deadline=time.monotonic() + 100)
+    # Both keys are limited: the one free soonest (one, 10 s) is used after waiting.
+    assert keys == ["Bearer one", "Bearer two", "Bearer one"]
+    assert len(waits) == 1 and 9 < waits[0] <= 10
+    assert result.error is None
+
+
+def test_no_waiting_many_minutes_for_a_daily_limit(monkeypatch):
+    calls, waits = [], []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(429, headers={"retry-after": "507"}, json={
+            "error": {"message": "Rate limit reached on tokens per day (TPD)"}})
+    mock_http(monkeypatch, handler)
+    monkeypatch.setattr("agent_smith.providers.time.sleep", waits.append)
+    result = complete(ProviderClient(config(max_retries=5), {"KEY_ONE": "one"}),
+                      deadline=time.monotonic() + 900)
+    assert len(calls) == 1 and waits == []
+    assert "HTTP 429" in result.error and "No key is available again" in result.error

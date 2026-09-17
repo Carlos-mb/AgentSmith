@@ -80,7 +80,6 @@ except RuntimeError:
 @pytest.mark.parametrize("reply_kind", ["json", "non_json_error"])
 def test_ai_exchange_logs_full_history_and_body_only_in_debug(level, reply_kind):
     code = '''
-import asyncio
 import json
 import sys
 import time
@@ -103,13 +102,15 @@ def handler(request):
         })
     return httpx.Response(503, text="ERROR_BODY_MARKER private-test-credential")
 
-original = httpx.AsyncClient
-httpx.AsyncClient = lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs)
+import openai
+import agent_smith.providers
+agent_smith.providers.OpenAI = lambda **kwargs: openai.OpenAI(
+    http_client=httpx.Client(transport=httpx.MockTransport(handler)), **kwargs)
 client = ProviderClient(ProviderConfig(api_url="https://example.invalid/v1", model_name="fixture",
     api_key_environment_variables=["CUSTOM_KEY"], max_retries=0),
     {"CUSTOM_KEY": "private-test-credential"})
-result = asyncio.run(client.complete(messages, max_input_tokens=6000, max_output_tokens=500,
-                                    deadline=time.monotonic() + 5))
+result = client.complete(messages, max_input_tokens=6000, max_output_tokens=500,
+                                    deadline=time.monotonic() + 5)
 assert result.request_count == 1
 assert (result.error is None) == (sys.argv[1] == "json")
 '''
@@ -129,52 +130,67 @@ assert (result.error is None) == (sys.argv[1] == "json")
         assert result.stderr == ""
 
 
+WORKER_SCRIPT = """
+from agent_smith.models import SandboxConfig
+from agent_smith.sandbox_session import SandboxSession
+sandbox = SandboxSession(SandboxConfig())
+sandbox.start()
+try:
+    result = sandbox.execute("print('hello'); final_answer('done')")
+    assert result.output == "hello\\n" and result.final_answer == "done"
+finally:
+    sandbox.close()
+"""
+
+
 @pytest.mark.parametrize("level", [None, "DEBUG"])
-def test_worker_logs_arrive_live_without_polluting_json_or_output(level):
-    process = subprocess.Popen([sys.executable, "-u", "json_worker.py"], cwd=ROOT,
-                               env=environment(level), stdin=subprocess.PIPE,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    try:
-        process.stdin.write(json.dumps({"type": "init", "config": {}, "tools": []}) + "\n")
-        process.stdin.flush()
-        assert json.loads(process.stdout.readline()) == {"type": "ready"}
-        if level:
-            # A log is visible while the worker is still waiting for its first block.
-            assert "json_worker.main" in process.stderr.readline()
-            assert process.poll() is None
-        output, logs = process.communicate(json.dumps({
-            "type": "execute", "code": "print('hello'); final_answer('done')",
-        }) + "\n", timeout=10)
-        assert process.returncode == 0
-        messages = [json.loads(line) for line in output.splitlines()]
-        assert "".join(m["text"] for m in messages if m["type"] == "output") == "hello\n"
-        assert messages[-1]["type"] == "done" and messages[-1]["final_answer"] == "done"
-        if level:
-            assert "execute_block" in logs and "final_answer capturado" in logs
-        else:
-            assert logs == ""
-    finally:
-        if process.poll() is None:
-            process.kill()
-        process.communicate()
-
-
-def test_startup_failure_is_json_data_even_when_logging_is_disabled():
-    result = subprocess.run([sys.executable, "json_worker.py"], cwd=ROOT,
-                            env=environment(None), text=True, capture_output=True,
-                            input=json.dumps({"type": "init", "config": {"max_memory_mb": 0}, "tools": []}) + "\n",
-                            timeout=10)
-    assert result.returncode == 1 and result.stderr == ""
-    message = json.loads(result.stdout)
-    assert message["type"] == "worker_error" and "must be positive" in message["error"]
-
-
-@pytest.mark.parametrize("level", [None, "ERROR"])
-def test_argument_errors_follow_log_level_and_keep_exit_code(level):
-    result = subprocess.run([sys.executable, "-m", "agent_mbpp"], cwd=ROOT,
-                            env=environment(level), text=True, capture_output=True, timeout=10)
-    assert result.returncode == 2 and result.stdout == ""
+def test_worker_logs_go_to_stderr_never_to_stdout(level):
+    result = subprocess.run([sys.executable, "-c", WORKER_SCRIPT], cwd=ROOT,
+                            env=environment(level), text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
     if level:
-        assert "Argumentos CLI inválidos" in result.stderr
+        assert "worker_main" in result.stderr and "final_answer capturado" in result.stderr
     else:
         assert result.stderr == ""
+
+
+def test_debug_writes_one_file_shared_by_the_agent_and_the_worker(debug_log_file):
+    result = subprocess.run([sys.executable, "-c", WORKER_SCRIPT], cwd=ROOT,
+                            env=environment("DEBUG"), text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    text = debug_log_file.read_text()
+    assert "SandboxSession.start" in text and "worker_main" in text
+    assert "Código recibido del agente" in text and "Salida del bloque" in text
+    process_ids = {line.split("[pid=")[1].split("]")[0] for line in text.splitlines() if "[pid=" in line}
+    assert len(process_ids) == 2
+
+
+def test_no_log_file_below_debug(debug_log_file):
+    result = subprocess.run([sys.executable, "-c", WORKER_SCRIPT], cwd=ROOT,
+                            env=environment("INFO"), text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert not debug_log_file.exists()
+
+
+def test_startup_failure_is_reported_with_its_cause_on_stderr():
+    code = """
+from agent_smith.models import SandboxConfig
+from agent_smith.sandbox_session import SandboxSession
+try:
+    SandboxSession(SandboxConfig.model_construct(max_memory_mb=0)).start()
+except RuntimeError as exc:
+    print(exc)
+"""
+    result = subprocess.run([sys.executable, "-c", code], cwd=ROOT,
+                            env=environment(None), text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0
+    assert "Sandbox startup failed" in result.stdout and "exited before it was ready" in result.stdout
+    assert "greater than 0" in result.stderr
+
+
+def test_argument_errors_use_argparse_and_its_exit_code():
+    result = subprocess.run([sys.executable, "-m", "agent_mbpp"], cwd=ROOT,
+                            env=environment(None), text=True, capture_output=True, timeout=10)
+    assert result.returncode == 2 and result.stdout == ""
+    assert "the following arguments are required" in result.stderr

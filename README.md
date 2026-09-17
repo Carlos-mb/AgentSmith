@@ -117,45 +117,43 @@ Both tasks passed; this small development sample is not a benchmark pass rate.
 
 ## System architecture
 
-The MBPP execution uses three separate processes:
+One task uses three processes:
 
-1. An asynchronous coordinator owns the LLM client, task limits and sandbox
-   supervisor. The benchmark adapter opens and closes MCP in the same task;
-   the supervisor borrows the open SDK session to service worker requests.
-2. A persistent Python worker executes consecutive code blocks in the same
-   namespace. It receives configuration and exchanges sequential JSON messages
-   with the supervisor. It does not receive API keys, SDK sessions or Docker
-   clients.
-3. An MCP server performs trusted tool operations, such as running tests inside
-   Docker. Tools are discovered from the connected server.
+1. **The agent** (`agent_mbpp.py` / `agent_swebench.py`) owns the LLM client, the
+   API keys, the task limits, the MCP client and the sandbox session. It runs the
+   Thought → Code → Observation loop. All of its code is ordinary synchronous Python.
+2. **The sandbox worker** (`agent_smith/sandbox.py`, started by
+   `agent_smith/sandbox_session.py` with `multiprocessing`) executes the generated
+   Python. It keeps one namespace, so variables persist between blocks. It talks to
+   the agent through a `multiprocessing` Pipe, sending plain Python dictionaries. It
+   clears its inherited environment on start, so it never sees API keys, and it owns
+   no MCP session and no Docker client.
+3. **An MCP server** (`mcp_tools_mbpp.py` or `mcp_tools_swebench.py`) performs the
+   trusted work, such as running tests inside Docker. Tools are discovered from the
+   connected server.
 
-Only one agent operation is active at a time. MCP connection setup, requests and
-cleanup must stay in the same asynchronous task. There is no private SDK thread,
-shared mutable provider budget or replay of previous code to recover state.
-A fatal worker failure may end the task with its actual partial result. A REPL
-restart must tell the user that variables have been lost.
+When generated code calls a tool, the worker sends an `mcp_request` and waits; the
+agent calls the MCP server and sends back the `mcp_result`. Only one operation is
+active at a time. If a block exceeds its time limit, the agent kills the whole
+worker process, which no code inside it can catch (not even a bare `except:`), and a
+new worker can be started with its variables lost.
 
-The common loop accepts either benchmark; only the MBPP adapter is implemented.
-The first live MBPP validation is complete; SWE-bench follows.
+### Why a separate worker process
 
-### Why asyncio
+The subject allows running untrusted code inside the agent process or in a separate
+one. A separate process gives the simplest explanation for the two hardest
+requirements: the API keys are in a different process from the generated code, and
+a runaway block is stopped by killing its process rather than by raising an
+exception that the code could catch.
 
-`asyncio` is not a subject requirement; it is a consequence of the tool used to
-speak MCP. The official `mcp` Python SDK (`ClientSession`, `stdio_client`,
-`streamable_http_client`) exposes an async-only API: every connection is an
-async context manager and every call (`initialize`, `list_tools`, `call_tool`)
-is a coroutine. Reimplementing the MCP JSON-RPC protocol by hand would avoid
-`asyncio`, but at the cost of rebuilding schema validation, pagination and the
-streamable HTTP transport that the SDK already provides.
+### Why a thread for MCP
 
-`asyncio` is confined to the coordinator task that owns the MCP session: setup,
-every request, and cleanup happen in that single task, with no private SDK
-thread and no event loop shared across components. The persistent worker that
-executes generated Python and the sandbox itself stay fully synchronous; they
-never receive an SDK session, an event loop or API keys. This keeps the async
-surface to the smallest piece that actually needs it, instead of wrapping the
-SDK in a synchronous facade with a dedicated thread, which would add
-concurrency for no behavioural gain.
+The official `mcp` SDK is async-only. Instead of making the whole agent async,
+`MCPClient` runs an asyncio event loop in one background thread. A single coroutine
+opens the session, waits until `close()` is called and closes it, because the SDK
+must open and close its contexts in the same task. Every request is sent to that
+loop with `asyncio.run_coroutine_threadsafe` and the caller simply waits for the
+answer. The rest of the program never sees `async` or `await`.
 
 ## Agent loop and limits
 
@@ -172,15 +170,14 @@ The subject and the available moulinette models specify these task limits:
 | MBPP | 10 | 6,000 | 1,500 | 120 seconds |
 | SWE-bench | 30 | 300,000 | 10,000 | 900 seconds |
 
-Each request sends the system prompt, the task and only the last three exchanges.
-The whole list is resent every iteration, so keeping all of it costs quadratically:
-one SWE-bench run spent 296,410 of its 300,000 input tokens that way, with a single
-search observation accounting for 72,264 of them. With the window, thirty iterations
-cost about 141,000 even if every observation hits its size cap. The window never
-discards what the result file records: `steps` keeps every response and observation
-in full. This follows the reference implementation, which trims to the same three
-exchanges for both benchmarks. The two validated MBPP runs used four and two
-iterations, below the window, so they are unaffected.
+Each request sends the system prompt, the task and as many recent exchanges as fit in
+a budget: the remaining input allowance divided by the remaining iterations, never
+fewer than the last six messages. The whole list is resent every iteration, so
+keeping all of it costs quadratically: one SWE-bench run spent 296,410 of its 300,000
+input tokens that way, with a single search observation accounting for 72,264 of
+them. A fixed three-exchange window failed the other way: the model forgot it had
+already edited a file and re-read the same ranges 22 times. Trimming never discards
+what the result file records: `steps` keeps every response and observation in full.
 
 Tokens accumulate across the task, including reasoning tokens where applicable.
 The loop must accumulate each request's metrics once. Total requests include
@@ -275,12 +272,12 @@ operation that an allowed Python library can expose.
 
 The worker's code timeout excludes time waiting for MCP. The total task deadline
 includes those waits. Already received output must survive timeout or failure;
-log truncation must be reported. The final answer and the git patch are preserved
+output truncation is reported. The final answer and the git patch are preserved
 in full.
 
-`final_answer` is always local to the sandbox and is never an MCP tool. Worker
-control exceptions must be communicated so that the coordinator can shut down;
-`KeyboardInterrupt` and `SystemExit` must not be silently swallowed.
+`final_answer` is always local to the sandbox and is never an MCP tool. A
+`SystemExit` or `KeyboardInterrupt` raised by the generated code is an ordinary
+error in the observation: it does not stop the worker or the agent.
 
 These controls do not establish resistance to hostile Python introspection,
 filesystem races, or alternative library APIs. Passing the subject's security
@@ -296,17 +293,17 @@ are outside the chosen first version.
 
 The MCP client supports stdio and streamable HTTP, dynamic discovery of tools,
 resources and prompts, and a manual generated from server metadata. The SDK and
-server validate MCP operations. The worker sees simple callable wrappers that
-exchange JSON with the supervisor; it does not own the MCP session.
+server validate MCP operations. The worker sees simple callable wrappers that ask
+the agent through the Pipe; it does not own the MCP session.
 
 The MBPP MCP server exposes `run_tests(code, test_imports, test_list,
-timeout_seconds)`. Its helper creates a Docker container for the candidate and
-public assertions, collects output and cleans up its own container. This helper
-uses the remaining task deadline for its operations and bounded cleanup. Each
-container has an unpredictable task label; after closing MCP, the adapter also
-removes containers with that exact label to cover cancellation or server death.
-Five seconds of the total task limit are reserved for cleanup. An unavailable
-Docker daemon can still prevent confirmed deletion; cleanup errors mark failure.
+timeout_seconds)`. Its helper runs the candidate and the public assertions with
+one `docker run --rm --network none --memory 128m` command, bounded by the
+remaining task deadline; on a timeout it removes the container with `docker rm -f`.
+Each container has an unpredictable task label; after closing MCP, the adapter also
+removes containers with that exact label to cover Ctrl+C or server death. Five
+seconds of the total task limit are reserved for cleanup. Both benchmarks talk to
+Docker the same way: through the `docker` command.
 
 The SWE-bench server exposes one command helper and the nine required tools:
 
@@ -356,7 +353,7 @@ uv run --offline --no-sync --python 3.10 python -m agent_swebench --help
 The required task flags are `--task-file`, `--output`, `--model-name` and
 `--provider-url`. Sandbox arguments retain an optional configuration path and
 mutually exclusive `--mcp-stdio` and `--mcp-server` options. The sandbox opens
-and closes its worker and optional MCP client in one asynchronous task:
+its worker and optional MCP client, and closes both on exit:
 
 ```bash
 uv run --offline --no-sync --python 3.10 sandbox
@@ -369,16 +366,16 @@ uv run --offline --no-sync --python 3.10 sandbox \
 
 Type Python code at the prompt. A block ends with a blank line, exactly as in the
 standard Python REPL, so an `else`, `except` or `finally` clause stays in the same
-entry. An exact `exit` at the main prompt or EOF closes the sandbox; on EOF a block
-still being typed is executed first, which is what piping a file into the sandbox
-needs. Entries share the
+entry. An exact `exit` at the main prompt or EOF closes the sandbox. Piped input
+(`cat file | uv run sandbox`) is read whole and executed one top-level statement at
+a time. Entries share the
 worker namespace. A fatal worker error restarts it and reports that variables
 were lost. `final_answer` is printed and then the REPL continues.
 
 ### First live MBPP run
 
 Use the normal project environment and its configured Docker daemon. The worker's
-environment contains no API keys or Docker configuration; the coordinator loads
+environment contains no API keys or Docker configuration; the agent loads
 provider keys. Install dependencies with `uv sync --python 3.10` and prepare the
 Docker image with `docker pull python:3.10.12-slim`. Keep provider keys in the local,
 gitignored `.env`, based on `.env.example`. The program reads environment variables;
@@ -439,17 +436,19 @@ Detailed exchanges have these DEBUG labels:
   `DOCKER SALIDA PARCIAL` shows whatever output could be recovered. DEBUG records
   the received Docker output before the existing observation truncation.
 
-The coordinator, worker and bundled MCP servers write logs to **stderr**, in real
-time. Append `2>debug.log` to the command to save them. JSON protocol messages,
-code output returned as observations and result files keep their existing format;
-diagnostic logs do not become model observations. Handled CLI errors follow the
+The agent, the worker and the bundled MCP servers write logs to **stderr**, in real
+time. With `DEBUG` they also append every record to one shared file, so a whole run
+can be read afterwards: `logs/agent_smith_<date>_<time>.log` under the directory the
+command runs from, or the path in `AGENT_SMITH_LOG_FILE`. The agent chooses the file
+name when it starts and passes it on to the worker and the MCP server; each line shows
+the process ID that wrote it. Code output returned as observations and result files
+keep their format; diagnostic logs do not become model observations. Handled CLI errors follow the
 selected log level and retain their exit codes. Explicit `--help` still prints help.
 
-Configured provider keys are redacted from coordinator logs, and HTTP headers and
+Configured provider keys are redacted from agent logs, and HTTP headers and
 third-party SDK logs are excluded. DEBUG still includes the task's full text and
-generated code. Only the log level is forwarded to the worker and MCP server;
-provider keys remain in the coordinator. Pending features log their entry and
-raise their existing `NotImplementedError`; logging does not implement them.
+generated code. Only the log level and the log file name are forwarded to the worker
+and MCP server; provider keys remain in the agent.
 
 ### Tests
 
@@ -464,7 +463,7 @@ git diff --check
 
 The second command needs Docker and the prepared image. Check skipped tests;
 a skipped Docker test does not prove integration. `test_mbpp_cycle.py` uses fake
-HTTP responses, actual processes and Docker, including cancellation during tests.
+HTTP responses, actual processes and Docker, including Ctrl+C during tests.
 If the default uv cache is read-only, prefix commands with
 `UV_CACHE_DIR=/tmp/agentsmith-uv-cache`; this does not change the interpreter.
 Reserve the full suite for integration work.
@@ -518,13 +517,15 @@ Project requirements come from the supplied `en.subject.pdf`, with public JSON
 contracts and validation limits checked against the available moulinette code.
 Useful primary references for implementation are:
 
-- [Python 3.10 documentation](https://docs.python.org/3.10/), especially `asyncio`,
-  `subprocess`, `json`, `pathlib` and `resource`.
+- [Python 3.10 documentation](https://docs.python.org/3.10/), especially `multiprocessing`,
+  `asyncio`, `subprocess`, `pathlib` and `resource`.
 - [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) for MCP
   sessions, transports and server capabilities.
 - [Pydantic documentation](https://docs.pydantic.dev/latest/) for data models.
-- [Docker SDK for Python](https://docker-py.readthedocs.io/en/stable/) for container
-  execution and cleanup.
+- [OpenAI Python SDK](https://github.com/openai/openai-python) for the
+  OpenAI-compatible chat-completions requests to every provider.
+- [Docker CLI reference](https://docs.docker.com/reference/cli/docker/) for
+  `docker run`, `exec` and `rm`.
 - [uv documentation](https://docs.astral.sh/uv/) for the Python environment.
 
 AI assistance covered inspecting the reference and subject, implementing the MBPP

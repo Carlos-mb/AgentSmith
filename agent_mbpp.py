@@ -1,15 +1,12 @@
 """Command-line entry point for the MBPP agent."""
 
 import argparse
-import asyncio
 import time
 from pathlib import Path
 from typing import Sequence
 
 from agent_smith.io import load_model, write_model
-from agent_smith.logging_config import (
-    LoggingArgumentParser, configure_logging, get_logger,
-)
+from agent_smith.logging_config import configure_logging, get_logger
 from agent_smith.mbpp_agent import run_mbpp_agent
 from agent_smith.models import MBPPTaskInput
 
@@ -19,7 +16,7 @@ logger = get_logger('agent_mbpp')
 def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse MBPP command-line arguments."""
     logger.debug("Entrando en parse_arguments")
-    parser = LoggingArgumentParser(
+    parser = argparse.ArgumentParser(
         description="Solve one MBPP task and write a solution JSON file."
     )
     parser.add_argument(
@@ -57,19 +54,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Write the real result, including failed tasks with partial metrics."""
     started_at = time.monotonic()
     configure_logging()
-    logger.debug("Accesing main")
+    logger.debug("Entrando en main")
     args = parse_arguments(argv)
     logger.info("Starting MBPP: reading task %s", args.task_file)
     try:
         task = load_model(args.task_file, MBPPTaskInput)
         logger.info("Tarea MBPP %s validada; iniciando el agente",
                     task.task_id)
-        result = asyncio.run(run_mbpp_agent(task, args, started_at=started_at))
+        result = run_mbpp_agent(task, args, started_at=started_at)
         write_model(args.output, result)
         logger.info("Resultado guardado en %s; success=%s",
                     args.output, result.success)
         return 0
-    except (RuntimeError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         logger.error("Error: %s", exc)
         return 1
 

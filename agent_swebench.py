@@ -1,16 +1,13 @@
 """Command-line entry point for the SWE-bench agent."""
 
 import argparse
-import asyncio
 import sys
 import time
 from pathlib import Path
 from typing import Sequence
 
 from agent_smith.io import load_model, write_model
-from agent_smith.logging_config import (
-    LoggingArgumentParser, configure_logging, get_logger,
-)
+from agent_smith.logging_config import configure_logging, get_logger
 from agent_smith.models import SWEBenchTaskInput
 from agent_smith.swebench_agent import run_swebench_agent
 
@@ -20,7 +17,7 @@ logger = get_logger('agent_swebench')
 def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse SWE-bench command-line arguments."""
     logger.debug("Entrando en parse_arguments")
-    parser = LoggingArgumentParser(
+    parser = argparse.ArgumentParser(
         description="Solve one SWE-bench task and write a solution JSON file."
     )
     parser.add_argument(
@@ -65,20 +62,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         task = load_model(args.task_file, SWEBenchTaskInput)
         logger.info("Tarea SWE-bench %s validada; iniciando el agente",
                     task.instance_id)
-        result = asyncio.run(
-            run_swebench_agent(task, args, started_at=started_at)
-        )
+        result = run_swebench_agent(task, args, started_at=started_at)
         write_model(args.output, result)
         logger.info("Resultado guardado en %s; success=%s",
                     args.output, result.success)
         return 0
-    except (RuntimeError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         logger.error("Error: %s", exc)
         return 1
     except KeyboardInterrupt:
-        # Ctrl+C: asyncio.run has already cancelled the task and closed the
-        # container; without this the user saw a traceback that looked like
-        # a failure.
+        # Ctrl+C: the finally blocks have already closed the worker, MCP and
+        # the container; without this the user saw a traceback that looked
+        # like a failure.
         print("Interrupted: no solution file was written.", file=sys.stderr)
         return 130
 

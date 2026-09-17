@@ -9,7 +9,7 @@ def test_ctrl_c_ends_with_a_short_message_and_no_traceback(tmp_path, monkeypatch
     )
     output = tmp_path / "solution.json"
 
-    async def interrupted(*args, **kwargs):
+    def interrupted(*args, **kwargs):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(agent_swebench, "run_swebench_agent", interrupted)

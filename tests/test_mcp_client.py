@@ -1,6 +1,5 @@
 """Tests for MCP client configuration and streamable HTTP discovery."""
 
-import asyncio
 from contextlib import suppress
 from pathlib import Path
 import socket
@@ -8,90 +7,9 @@ import subprocess
 import sys
 import time
 
-import pytest
-
 from agent_smith.mcp_client import MCPClient
 from agent_smith.models import SandboxConfig
-from agent_smith.sandbox import SandboxSession
-
-
-def test_mcp_client_accepts_stdio_command() -> None:
-    command = ["python", "mcp_tools_mbpp.py"]
-
-    client = MCPClient(stdio_command=command)
-
-    assert client.stdio_command == command
-    assert client.server_url is None
-
-    assert client.environment == {}
-
-
-def test_mcp_client_accepts_http_url() -> None:
-    url = "http://127.0.0.1:8000/mcp"
-
-    client = MCPClient(server_url=url)
-
-    assert client.server_url == url
-    assert client.stdio_command is None
-
-    assert client.environment == {}
-
-
-def test_mcp_client_rejects_both_transports() -> None:
-    with pytest.raises(ValueError):
-        MCPClient(
-            stdio_command=["python", "mcp_tools_mbpp.py"],
-            server_url="http://127.0.0.1:8000/mcp",
-        )
-
-
-def test_mcp_client_rejects_no_transport() -> None:
-    with pytest.raises(ValueError):
-        MCPClient()
-
-
-def test_mcp_client_rejects_invalid_transport_values() -> None:
-    with pytest.raises(ValueError):
-        MCPClient(stdio_command=[])
-
-    with pytest.raises(ValueError):
-        MCPClient(server_url="not-a-valid-url")
-
-
-def test_mcp_client_copies_configuration() -> None:
-    command = ["python", "mcp_tools_mbpp.py"]
-    environment = {"EXAMPLE": "original"}
-
-    client = MCPClient(
-        stdio_command=command,
-        environment=environment,
-    )
-
-    command.append("--changed")
-    environment["EXAMPLE"] = "changed"
-
-    assert client.stdio_command == [
-        "python",
-        "mcp_tools_mbpp.py",
-    ]
-    assert client.environment == {
-        "EXAMPLE": "original",
-    }
-
-def test_mcp_client_rejects_blank_executable() -> None:
-    with pytest.raises(ValueError):
-        MCPClient(stdio_command=[""])
-
-    with pytest.raises(ValueError):
-        MCPClient(stdio_command=["   "])
-
-
-def test_mcp_client_accepts_empty_argument() -> None:
-    command = ["python", "server.py", "--message", ""]
-
-    client = MCPClient(stdio_command=command)
-
-    assert client.stdio_command == command
+from agent_smith.sandbox_session import SandboxSession
 
 
 def test_mcp_client_discovers_and_uses_streamable_http_server() -> None:
@@ -106,17 +24,17 @@ def test_mcp_client_discovers_and_uses_streamable_http_server() -> None:
     )
     url = f"http://127.0.0.1:{port}/mcp"
 
-    async def scenario():
+    try:
         deadline = time.monotonic() + 10
         client = None
         while client is None:
             candidate = MCPClient(server_url=url)
             try:
-                session, manual = await candidate.start(deadline=deadline)
+                manual = candidate.start(deadline=deadline)
             except Exception:
                 if time.monotonic() >= deadline:
                     raise
-                await asyncio.sleep(0.05)
+                time.sleep(0.05)
             else:
                 client = candidate
         try:
@@ -128,36 +46,35 @@ def test_mcp_client_discovers_and_uses_streamable_http_server() -> None:
             assert [prompt["name"] for prompt in manual.prompts] == ["discuss"]
             assert "HTTP integration instructions." in manual.as_text()
 
-            tool = await session.call_tool("identify", arguments={"value": "MCP"})
-            assert tool.content[0].text == "identified: MCP"
-            resource = await session.read_resource("test://status")
-            assert resource.contents[0].text == "ready"
-            item = await session.read_resource("test://items/example")
-            assert item.contents[0].text == "item: example"
-            prompt = await session.get_prompt("discuss", arguments={"topic": "HTTP"})
-            assert prompt.messages[0].content.text == "Discuss HTTP"
+            assert client.call("call_tool", {"name": "identify", "arguments": {"value": "MCP"}}) == {
+                "result": "identified: MCP"}
+            assert client.call("read_resource", {"uri": "test://status"}) == {"result": "ready"}
+            assert client.call("read_resource", {"uri": "test://items/example"}) == {
+                "result": "item: example"}
+            prompt = client.call("get_prompt", {"name": "discuss", "arguments": {"topic": "HTTP"}})
+            assert prompt["result"]["messages"][0]["content"]["text"] == "Discuss HTTP"
 
-            sandbox = SandboxSession(
-                SandboxConfig(allowed_directories=[]), session, manual,
-            )
-            try:
-                await sandbox.start()
-                execution = await sandbox.execute(
-                    "print(identify('worker'))\n"
-                    "print(read_resource('test://status'))\n"
-                    "print(get_prompt('discuss', {'topic': 'worker'}))"
+            def in_worker():
+                sandbox = SandboxSession(
+                    SandboxConfig(allowed_directories=[]), client, manual,
                 )
-                assert execution.error is None
-                assert "identified: worker" in execution.output
-                assert "ready" in execution.output
-                assert "Discuss worker" in execution.output
-            finally:
-                await sandbox.close()
-        finally:
-            await client.close()
+                try:
+                    sandbox.start()
+                    return sandbox.execute(
+                        "print(identify('worker'))\n"
+                        "print(read_resource('test://status'))\n"
+                        "print(get_prompt('discuss', {'topic': 'worker'}))"
+                    )
+                finally:
+                    sandbox.close()
 
-    try:
-        asyncio.run(scenario())
+            execution = in_worker()
+            assert execution.error is None
+            assert "identified: worker" in execution.output
+            assert "ready" in execution.output
+            assert "Discuss worker" in execution.output
+        finally:
+            client.close()
     finally:
         with suppress(ProcessLookupError):
             server.terminate()

@@ -37,7 +37,6 @@ def test_observation_contains_normal_output():
         final_answer=None,
         error=None,
         timed_out=False,
-        truncated=False,
     )
 
     observation = build_observation(
@@ -55,7 +54,6 @@ def test_observation_contains_execution_error():
         final_answer=None,
         error="NameError: name 'x' is not defined",
         timed_out=False,
-        truncated=False,
     )
 
     observation = build_observation(
@@ -72,7 +70,6 @@ def test_observation_reports_timeout_and_keeps_partial_output():
         final_answer=None,
         error=None,
         timed_out=True,
-        truncated=False,
     )
 
     observation = build_observation(
@@ -93,7 +90,6 @@ def test_observation_keeps_existing_truncation_warning():
         final_answer=None,
         error=None,
         timed_out=False,
-        truncated=True,
     )
 
     observation = build_observation(
@@ -110,7 +106,6 @@ def test_timeout_does_not_claim_variables_were_lost():
         final_answer=None,
         error=None,
         timed_out=True,
-        truncated=False,
     )
 
     observation = build_observation(
@@ -129,7 +124,6 @@ def test_truncation_warning_is_not_duplicated():
         final_answer=None,
         error=None,
         timed_out=False,
-        truncated=True,
     )
 
     observation = build_observation(

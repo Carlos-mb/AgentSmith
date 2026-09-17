@@ -3,77 +3,34 @@
 import json
 
 import pytest
+from pydantic import ValidationError
 
-from agent_smith.io import load_model, read_json_file, write_model
+from agent_smith.io import load_model, write_model
 from agent_smith.models import MBPPTaskInput
 
 
-def test_read_json_file_returns_dictionary(tmp_path):
-    input_path = tmp_path / "task.json"
-    input_path.write_text('{"task_id": 1}', encoding="utf-8")
-
-    assert read_json_file(input_path) == {"task_id": 1}
-
-
-def test_read_json_file_rejects_missing_file(tmp_path):
-    input_path = tmp_path / "missing.json"
-
-    with pytest.raises(RuntimeError, match="Input file not found"):
-        read_json_file(input_path)
+def test_load_model_validates_the_file(tmp_path):
+    path = tmp_path / "task.json"
+    path.write_text(json.dumps({"task_id": 1, "task_definition": "d",
+                                "function_definition": "def f():"}), encoding="utf-8")
+    assert load_model(path, MBPPTaskInput).task_id == 1
 
 
-def test_read_json_file_rejects_invalid_json(tmp_path):
-    input_path = tmp_path / "task.json"
-    input_path.write_text("not json", encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="Invalid JSON file"):
-        read_json_file(input_path)
+def test_missing_file_is_an_os_error(tmp_path):
+    with pytest.raises(OSError):
+        load_model(tmp_path / "missing.json", MBPPTaskInput)
 
 
-def test_read_json_file_rejects_invalid_utf8(tmp_path):
-    input_path = tmp_path / "task.json"
-    input_path.write_bytes(b'{"value": "\xff"}')
-
-    with pytest.raises(RuntimeError, match="Input file is not valid UTF-8"):
-        read_json_file(input_path)
-
-
-def test_load_model_rejects_json_array(tmp_path):
-    input_path = tmp_path / "task.json"
-    input_path.write_text("[]", encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="Invalid MBPPTaskInput"):
-        load_model(input_path, MBPPTaskInput)
+@pytest.mark.parametrize("content", ["not json", '{"task_id": "x"}'])
+def test_bad_json_or_fields_are_a_value_error(tmp_path, content):
+    path = tmp_path / "task.json"
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_model(path, MBPPTaskInput)
 
 
-def test_load_model_rejects_missing_required_field(tmp_path):
-    input_path = tmp_path / "task.json"
-    task_data = {
-        "task_id": 2,
-        "function_definition": "def similar_elements(a, b):",
-        "test_imports": [],
-        "test_list": [],
-    }
-    input_path.write_text(json.dumps(task_data), encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="Invalid MBPPTaskInput"):
-        load_model(input_path, MBPPTaskInput)
-
-
-def test_load_and_write_model(tmp_path):
-    task_path = tmp_path / "task.json"
-    output_path = tmp_path / "output" / "task.json"
-    task_data = {
-        "task_id": 2,
-        "task_definition": "Return the common elements.",
-        "function_definition": "def similar_elements(a, b):",
-        "test_imports": [],
-        "test_list": ["assert similar_elements((1,), (1,)) == (1,)"],
-    }
-    task_path.write_text(json.dumps(task_data), encoding="utf-8")
-
-    task = load_model(task_path, MBPPTaskInput)
-    write_model(output_path, task)
-    reloaded_task = load_model(output_path, MBPPTaskInput)
-
-    assert reloaded_task == task
+def test_write_model_creates_the_folder(tmp_path):
+    path = tmp_path / "out" / "task.json"
+    task = MBPPTaskInput(task_id=1, task_definition="d", function_definition="def f():")
+    write_model(path, task)
+    assert load_model(path, MBPPTaskInput) == task

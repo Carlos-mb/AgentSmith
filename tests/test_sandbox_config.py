@@ -52,7 +52,7 @@ def test_load_sandbox_config_rejects_zero_execution_time(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError, match="max_execution_time_seconds"):
+    with pytest.raises(ValueError, match="max_execution_time_seconds"):
         load_sandbox_config(config_path)
 
 
@@ -63,14 +63,14 @@ def test_load_sandbox_config_rejects_negative_memory(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError, match="max_memory_mb"):
+    with pytest.raises(ValueError, match="max_memory_mb"):
         load_sandbox_config(config_path)
 
 
 def test_load_sandbox_config_handles_missing_file(tmp_path):
     config_path = tmp_path / "does_not_exist.json"
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(OSError):
         load_sandbox_config(config_path)
 
 
@@ -81,7 +81,7 @@ def test_load_sandbox_config_handles_invalid_json(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError):
         load_sandbox_config(config_path)
 
 
@@ -92,5 +92,5 @@ def test_load_sandbox_config_handles_invalid_type(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError):
         load_sandbox_config(config_path)

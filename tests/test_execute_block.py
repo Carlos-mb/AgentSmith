@@ -1,15 +1,21 @@
 """Exercise blocks of known test code without starting a worker process."""
 
-import json
 import sys
-from io import StringIO
-from unittest.mock import Mock
 
 import pytest
 
 from agent_smith.models import SandboxConfig
-from agent_smith.sandbox import _make_safe_builtins, final_answer
-from json_worker import WorkerProtocolError, execute_block
+from agent_smith.sandbox import _make_safe_builtins, execute_block, final_answer
+
+
+class FakeConnection:
+    """Stand-in for one end of a multiprocessing Pipe: records what is sent."""
+
+    def __init__(self):
+        self.sent = []
+
+    def send(self, message):
+        self.sent.append(message)
 
 
 @pytest.fixture
@@ -23,28 +29,26 @@ def namespace():
 
 
 def test_blocks_share_variables_and_function_globals(namespace):
-    stream = StringIO()
+    stream = FakeConnection()
 
     execute_block("x = 1\ndef get_x():\n    return x", namespace, stream)
     execute_block("x += 1\nresult = get_x()", namespace, stream)
 
     assert namespace["x"] == 2
     assert namespace["result"] == 2
-    messages = [json.loads(line) for line in stream.getvalue().splitlines()]
+    messages = stream.sent
     assert messages == [
         {
-            "type": "done", "final_answer": None, "error": None,
-            "truncated": False, "omitted": 0,
+            "type": "done", "final_answer": None, "error": None
         },
         {
-            "type": "done", "final_answer": None, "error": None,
-            "truncated": False, "omitted": 0,
+            "type": "done", "final_answer": None, "error": None
         },
     ]
 
 
 def test_stdout_and_stderr_keep_order_and_are_restored(namespace):
-    stream = StringIO()
+    stream = FakeConnection()
     original_streams = (sys.stdout, sys.stderr)
     # Expose sys only to this fixed test code to exercise stderr redirection.
     namespace["sys"] = sys
@@ -58,7 +62,7 @@ def test_stdout_and_stderr_keep_order_and_are_restored(namespace):
     )
 
     assert (sys.stdout, sys.stderr) == original_streams
-    messages = [json.loads(line) for line in stream.getvalue().splitlines()]
+    messages = stream.sent
     assert messages[:-1] == [
         {"type": "output", "text": "first"},
         {"type": "output", "text": "second"},
@@ -69,7 +73,7 @@ def test_stdout_and_stderr_keep_order_and_are_restored(namespace):
 
 
 def test_error_keeps_output_and_variables_for_next_block(namespace):
-    stream = StringIO()
+    stream = FakeConnection()
     original_streams = (sys.stdout, sys.stderr)
 
     execute_block(
@@ -80,29 +84,29 @@ def test_error_keeps_output_and_variables_for_next_block(namespace):
 
     assert (sys.stdout, sys.stderr) == original_streams
     assert namespace["x"] == 7
-    messages = [json.loads(line) for line in stream.getvalue().splitlines()]
+    messages = stream.sent
     assert messages == [
         {"type": "output", "text": "before"},
         {
             "type": "done", "final_answer": None,
-            "error": "ValueError: bad value", "truncated": False, "omitted": 0,
+            "error": "ValueError: bad value",
         },
     ]
 
-    next_stream = StringIO()
+    next_stream = FakeConnection()
     execute_block("x += 1", namespace, next_stream)
     assert namespace["x"] == 8
-    assert json.loads(next_stream.getvalue())["error"] is None
+    assert next_stream.sent[-1]["error"] is None
 
 
 def test_syntax_error_is_reported(namespace):
-    stream = StringIO()
+    stream = FakeConnection()
     original_streams = (sys.stdout, sys.stderr)
 
     execute_block("if :", namespace, stream)
 
     assert (sys.stdout, sys.stderr) == original_streams
-    message = json.loads(stream.getvalue())
+    message = stream.sent[-1]
     assert message["type"] == "done"
     assert message["error"].startswith("SyntaxError:")
     assert message["final_answer"] is None
@@ -110,7 +114,7 @@ def test_syntax_error_is_reported(namespace):
 
 @pytest.mark.parametrize("answer", ["complete answer", ""])
 def test_final_answer_stops_the_block(namespace, answer):
-    stream = StringIO()
+    stream = FakeConnection()
     namespace["answer"] = answer
     original_streams = (sys.stdout, sys.stderr)
 
@@ -118,101 +122,28 @@ def test_final_answer_stops_the_block(namespace, answer):
 
     assert (sys.stdout, sys.stderr) == original_streams
     assert "finished" not in namespace
-    assert json.loads(stream.getvalue()) == {
+    assert stream.sent[-1] == {
         "type": "done", "final_answer": answer, "error": None,
-        "truncated": False, "omitted": 0,
     }
 
 
-def test_log_limit_keeps_final_answer_complete_and_resets_next_block(namespace):
-    stream = StringIO()
-    answer = "patch\n" * 4_000
-    namespace["answer"] = answer
-
-    execute_block(
-        "print('x' * 12_005, end='')\nfinal_answer(answer)",
-        namespace,
-        stream,
-    )
-
-    messages = [json.loads(line) for line in stream.getvalue().splitlines()]
-    assert messages == [
-        {"type": "output", "text": "x" * 12_000},
-        {"type": "truncated"},
-        {
-            "type": "done", "final_answer": answer, "error": None,
-            "truncated": True, "omitted": 5,
-        },
-    ]
-
-    next_stream = StringIO()
-    execute_block("print('ok', end='')", namespace, next_stream)
-    messages = [json.loads(line) for line in next_stream.getvalue().splitlines()]
-    assert messages == [
-        {"type": "output", "text": "ok"},
-        {
-            "type": "done", "final_answer": None, "error": None,
-            "truncated": False, "omitted": 0,
-        },
-    ]
-
-
-@pytest.mark.parametrize(
-    "expression, exception_type, code",
-    [
-        ("KeyboardInterrupt()", KeyboardInterrupt, None),
-        ("SystemExit()", SystemExit, None),
-        ("SystemExit(3)", SystemExit, 3),
-        ("SystemExit('bye')", SystemExit, "bye"),
-    ],
-)
-def test_control_exit_is_reported_and_propagated(
-    namespace, expression, exception_type, code,
-):
-    stream = StringIO()
-    original_streams = (sys.stdout, sys.stderr)
-
-    with pytest.raises(exception_type) as caught:
-        execute_block(
-            f"print('before', end='')\nraise {expression}\nfinished = True",
-            namespace,
-            stream,
-        )
-
-    assert (sys.stdout, sys.stderr) == original_streams
-    assert "finished" not in namespace
-    assert getattr(caught.value, "code", None) == code
-    messages = [json.loads(line) for line in stream.getvalue().splitlines()]
-    assert messages == [
-        {"type": "output", "text": "before"},
-        {"type": "control_exit", "exception": exception_type.__name__, "code": code},
-    ]
-
-
-def test_protocol_failure_propagates_without_sending_done(namespace):
-    stream = Mock(spec=StringIO)
-    error = OSError("Test channel failure.")
-    stream.write.side_effect = error
-    original_streams = (sys.stdout, sys.stderr)
-
-    with pytest.raises(WorkerProtocolError) as caught:
-        execute_block("print('hello')", namespace, stream)
-
-    assert (sys.stdout, sys.stderr) == original_streams
-    assert caught.value.__cause__ is error
-    stream.write.assert_called_once()
-    sent_message = json.loads(stream.write.call_args.args[0])
-    assert sent_message["type"] == "output"
+def test_exit_requests_from_generated_code_are_ordinary_errors(namespace):
+    for statement in ("raise KeyboardInterrupt()", "raise SystemExit(3)"):
+        stream = FakeConnection()
+        execute_block(f"print('before', end='')\n{statement}\nfinished = True", namespace, stream)
+        assert "finished" not in namespace
+        assert stream.sent[0] == {"type": "output", "text": "before"}
+        assert stream.sent[-1]["type"] == "done"
+        assert stream.sent[-1]["error"].split(":")[0] in ("KeyboardInterrupt", "SystemExit")
 
 
 def _printed(code, namespace):
     """Return only what the block wrote as output messages."""
-    stream = StringIO()
+    stream = FakeConnection()
     execute_block(code, namespace, stream)
     return "".join(
-        json.loads(line)["text"]
-        for line in stream.getvalue().splitlines()
-        if json.loads(line)["type"] == "output"
+        message["text"] for message in stream.sent
+        if message["type"] == "output"
     )
 
 

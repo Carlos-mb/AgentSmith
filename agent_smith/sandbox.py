@@ -1,38 +1,46 @@
-"""Small Python controls and supervision of a persistent worker.
+"""Everything that runs inside the sandbox worker process.
 
-These controls do not resist hostile Python introspection. Project tests use
-the execution environment authorized in AGENTS.md.
+The agent never executes generated Python itself. SandboxSession
+(sandbox_session.py) starts a separate worker process that runs worker_main.
+Inside that process this module applies the controls (allowed imports, allowed
+directories, safe builtins, memory limit, no network) and runs each block in
+one shared namespace, so variables persist between blocks.
+
+The worker and the agent talk through a multiprocessing Pipe, sending plain
+Python dicts:
+
+    agent  -> worker   {"type": "execute", "code": ...}
+    worker -> agent    {"type": "ready"}                    set up, waiting for code
+    worker -> agent    {"type": "output", "text": ...}      what the code prints
+    worker -> agent    {"type": "mcp_request", ...}          the code called a tool
+    agent  -> worker   {"type": "mcp_result", ...}          the tool's answer
+    worker -> agent    {"type": "done", ...}                block finished
+
+These controls do not resist hostile Python introspection.
 """
 
 from __future__ import annotations
 
-from agent_smith.logging_config import LOG_LEVEL_ENV, get_logger
+from agent_smith.logging_config import (
+    LOG_FILE_ENV, LOG_LEVEL_ENV, configure_logging, get_logger,
+)
 
-import asyncio
+import ast
 import builtins
-import json
-import logging
-import os
-import sys
-import tempfile
-import time
-
-import anyio
 import importlib
+import keyword
+import os
+import signal
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Callable
-from agent_smith.io import load_model
+from typing import Any, Callable
 
+from agent_smith.io import load_model
 from agent_smith.models import SandboxConfig
 
 logger = get_logger('agent_smith.sandbox')
-
-if TYPE_CHECKING:
-    from mcp import ClientSession
-
-    from agent_smith.mcp_client import MCPManual
 
 
 @dataclass
@@ -47,7 +55,6 @@ class SandboxExecution:
     final_answer: str | None = None
     error: str | None = None
     timed_out: bool = False
-    truncated: bool = False
     worker_failed: bool = False
 
 
@@ -73,23 +80,9 @@ def final_answer(answer: str) -> None:
 
 
 def load_sandbox_config(path: str | Path | None) -> SandboxConfig:
-    """Load sandbox settings and require positive resource limits."""
+    """Load sandbox settings from a JSON file, or use the defaults."""
     logger.debug("Entrando en load_sandbox_config")
-    if path is None:
-        config = SandboxConfig()
-    else:
-        config = load_model(path, SandboxConfig)
-
-    if config.max_execution_time_seconds <= 0:
-        raise RuntimeError("max_execution_time_seconds must be positive.")
-
-    if config.max_memory_mb <= 0:
-        raise RuntimeError("max_memory_mb must be positive.")
-
-    logger.debug("Configuración sandbox válida: memoria=%s MiB, timeout de "
-                 "bloque=%ss", config.max_memory_mb,
-                 config.max_execution_time_seconds)
-    return config
+    return SandboxConfig() if path is None else load_model(path, SandboxConfig)
 
 
 def _is_import_allowed(module_name, patterns):
@@ -250,8 +243,6 @@ def _apply_worker_limits(config: SandboxConfig) -> None:
     import resource
     import socket
 
-    if config.max_memory_mb <= 0 or config.max_execution_time_seconds <= 0:
-        raise ValueError("Sandbox resource limits must be positive.")
     memory = config.max_memory_mb * 1024 * 1024
     _, hard = resource.getrlimit(resource.RLIMIT_AS)
     if hard != resource.RLIM_INFINITY:
@@ -275,300 +266,177 @@ def _apply_worker_limits(config: SandboxConfig) -> None:
     logger.debug("Vías de red expuestas deshabilitadas en el trabajador")
 
 
-async def _send_worker_message(worker, message: dict) -> None:
-    logger.debug("Entrando en _send_worker_message")
-    logger.debug("Enviando JSON al trabajador: tipo=%s", message.get("type"))
-    worker.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
-    await worker.stdin.drain()
+class WorkerOutput:
+    """File-like object for print(): send every write to the agent at once.
+
+    Sending immediately keeps the output that was printed before a timeout:
+    the agent already has it when it kills the worker. The agent, not the
+    worker, decides how much of it to keep.
+    """
+
+    def __init__(self, connection) -> None:
+        self.connection = connection
+
+    def write(self, text: str) -> int:
+        if text:
+            self.connection.send({"type": "output", "text": text})
+        return len(text)
+
+    def flush(self) -> None:
+        """Nothing to flush: every write is sent immediately."""
 
 
-async def _read_worker_message(worker, buffer: bytearray) -> dict:
-    # Read chunks so an intact final answer can exceed StreamReader's line
-    # limit.
-    logger.debug("Entrando en _read_worker_message")
-    while b"\n" not in buffer:
-        chunk = await worker.stdout.read(16_384)
-        if not chunk:
-            logger.warning("EOF del trabajador al esperar un mensaje JSON")
-            raise EOFError("Worker closed its output channel.")
-        buffer.extend(chunk)
-    end = buffer.index(b"\n")
-    line = bytes(buffer[:end])
-    del buffer[:end + 1]
-    message = json.loads(line)
-    if (not isinstance(message, dict)
-            or not isinstance(message.get("type"), str)):
-        raise ValueError("Invalid worker message.")
-    logger.debug("JSON recibido del trabajador: tipo=%s, bytes=%s",
-                 message["type"], len(line))
-    return message
+def _request_mcp(connection, operation: str,
+                 arguments: dict[str, Any]) -> Any:
+    """Ask the agent to run one MCP operation and wait for its reply."""
+    logger.debug("Entrando en _request_mcp")
+    logger.info("Solicitando operación MCP %s al agente", operation)
+    connection.send({
+        "type": "mcp_request", "operation": operation, "arguments": arguments,
+    })
+    reply = connection.recv()
+    if reply.get("error") is not None:
+        logger.warning("La operación MCP devolvió un error; "
+                       "se entregará al código")
+        raise RuntimeError(reply["error"])
+    logger.debug("Resultado MCP recibido; reanudando el bloque Python")
+    return reply["result"]
 
 
-async def _dispatch_mcp(session, message: dict) -> dict:
-    """Call the SDK; tool errors are observations, disconnects are fatal."""
-    logger.debug("Entrando en _dispatch_mcp")
-    from mcp.shared.exceptions import McpError
+def _make_tool_wrapper(tool: dict[str, Any], connection) -> Callable[..., Any]:
+    """Build the local Python function that calls one discovered MCP tool."""
+    logger.debug("Entrando en _make_tool_wrapper")
+    name = tool["name"]
+    parameters = list(tool.get("inputSchema", {}).get("properties", {}))
 
-    if session is None:
-        logger.warning("El trabajador pidió MCP sin una sesión conectada")
-        return {"type": "mcp_result", "error": "No MCP server is connected."}
-    operation, arguments = message["operation"], message["arguments"]
-    logger.info("Ejecutando MCP %s; herramienta/prompt=%s",
-                operation, arguments.get("name", "—"))
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug("MCP ENVIADO [%s]:\n%s", operation,
-                     json.dumps(arguments, ensure_ascii=False, indent=2))
-    try:
-        if operation == "call_tool":
-            response = await session.call_tool(**arguments)
-        elif operation == "read_resource":
-            response = await session.read_resource(**arguments)
-        elif operation == "get_prompt":
-            response = await session.get_prompt(**arguments)
+    def tool_wrapper(*args, **kwargs):
+        logger.debug("Llamada a herramienta descubierta: %s", name)
+        if len(args) > len(parameters):
+            raise TypeError(f"Too many positional arguments for {name}.")
+        arguments = dict(zip(parameters, args))
+        if arguments.keys() & kwargs.keys():
+            raise TypeError(f"Duplicate arguments for {name}.")
+        arguments.update(kwargs)
+        return _request_mcp(connection, "call_tool", {
+            "name": name, "arguments": arguments,
+        })
+
+    return tool_wrapper
+
+
+def _build_namespace(config: SandboxConfig, tools: list[dict[str, Any]],
+                     connection) -> dict[str, Any]:
+    """Prepare persistent user globals with safe builtins and MCP wrappers."""
+    logger.debug("Entrando en _build_namespace")
+    safe = _make_safe_builtins(config)
+
+    def mcp_call_tool(name, arguments=None):
+        return _request_mcp(connection, "call_tool", {
+            "name": name,
+            "arguments": arguments if arguments is not None else {},
+        })
+
+    def read_resource(uri):
+        return _request_mcp(connection, "read_resource", {"uri": uri})
+
+    def get_prompt(name, arguments=None):
+        return _request_mcp(connection, "get_prompt", {
+            "name": name,
+            "arguments": arguments if arguments is not None else {},
+        })
+
+    namespace = {
+        "__builtins__": safe, "__name__": "__sandbox__",
+        "final_answer": final_answer, "mcp_call_tool": mcp_call_tool,
+        "read_resource": read_resource, "get_prompt": get_prompt,
+    }
+    for tool in tools:
+        name = tool["name"]
+        if (name.isidentifier() and not keyword.iskeyword(name)
+                and name not in safe and name not in namespace):
+            namespace[name] = _make_tool_wrapper(tool, connection)
+            logger.debug("Función local MCP registrada: %s", name)
         else:
-            raise ValueError(f"Unknown MCP operation: {operation}")
-    except McpError as exc:
-        logger.warning("El SDK MCP devolvió un error: código=%s",
-                       exc.error.code)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("MCP RECIBIDO [%s, error SDK]:\n%s", operation,
-                         exc.error.model_dump_json(indent=2, by_alias=True))
-        if exc.error.code not in (-32601, -32602):
-            raise
-        return {"type": "mcp_result", "error": str(exc)}
-    data = response.model_dump(mode="json", by_alias=True)
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug("MCP RECIBIDO [%s]:\n%s", operation,
-                     json.dumps(data, ensure_ascii=False, indent=2))
-    if data.get("isError"):
-        logger.warning("La herramienta MCP informó un error; se devolverá "
-                       "como observación")
-        return {"type": "mcp_result",
-                "error": json.dumps(data, ensure_ascii=False)}
-    # Generated code expects text: a server that returns a dict delivers it
-    # here already serialised as JSON.
-    content = data.get("content", data.get("contents"))
-    if content and len(content) == 1 and "text" in content[0]:
-        result = content[0]["text"]
-    else:
-        result = data
-    logger.debug("Operación MCP completada; devolviendo resultado al "
-                 "trabajador")
-    return {"type": "mcp_result", "result": result}
+            logger.debug("Herramienta %s disponible mediante mcp_call_tool; "
+                         "nombre reservado o no válido", name)
+    logger.debug("Namespace persistente preparado; entradas=%s",
+                 len(namespace))
+    return namespace
 
 
-class SandboxSession:
-    """Own one worker; borrow MCP from the task that opens and closes it."""
+def execute_block(code: str, namespace: dict[str, Any], connection) -> None:
+    """Execute code in the shared namespace and send its result."""
+    logger.debug("Entrando en execute_block")
+    logger.info("Ejecutando bloque Python en el namespace persistente: "
+                "%s caracteres", len(code))
+    logger.debug("Código recibido del agente:\n%s", code)
+    output = WorkerOutput(connection)
+    answer = None
+    error = None
 
-    def __init__(
-        self,
-        config: SandboxConfig,
-        mcp_session: ClientSession | None = None,
-        manual: MCPManual | None = None,
-    ) -> None:
-        logger.debug("Entrando en SandboxSession.__init__")
-        if (mcp_session is None) != (manual is None):
-            raise ValueError(
-                "MCP session and manual must be supplied together.")
-        self.config = config.model_copy(deep=True)
-        self.mcp_session = mcp_session
-        self.manual = manual
+    try:
+        with redirect_stdout(output), redirect_stderr(output):
+            parsed = ast.parse(code)
+            # As in the Python REPL: if the block ends with an expression,
+            # print its value. The models call tools without print, and
+            # without this the observation came back empty and they looped.
+            trailing = None
+            if parsed.body and isinstance(parsed.body[-1], ast.Expr):
+                trailing = parsed.body.pop().value
+            exec(compile(parsed, "<sandbox>", "exec"), namespace, namespace)
+            if trailing is not None:
+                value = eval(
+                    compile(ast.Expression(trailing), "<sandbox>", "eval"),
+                    namespace, namespace,
+                )
+                if value is not None:
+                    print(value)
 
-        # worker will keep the reference to the persistent PID of sandbox
-        self.worker = None
-        self.work_directory = None
-        self._temporary = None
-        self._buffer = bytearray()
-        self._active = False
+    except FinalAnswerSignal as exc:
+        answer = exc.args[0]
+        logger.info("final_answer capturado: %s caracteres", len(answer))
 
-    async def start(self) -> None:
-        """Start Python with a temporary cwd and no inherited credentials."""
-        logger.debug("Entrando en SandboxSession.start")
-        logger.info("Arrancando trabajador Python persistente")
-        if self.worker is not None:
-            raise RuntimeError("Sandbox is already started.")
+    except BaseException as exc:
+        # Any error, including a SystemExit or KeyboardInterrupt raised by the
+        # generated code, is just an observation: the worker keeps running.
+        error = f"{type(exc).__name__}: {exc}"
+        logger.warning("Bloque Python fallido: %s; se enviará una "
+                       "observación", error)
+
+    connection.send({"type": "done", "final_answer": answer, "error": error})
+    logger.info("Bloque terminado: error=%s, respuesta final=%s",
+                error is not None, answer is not None)
+
+
+def worker_main(connection, config_data: dict[str, Any],
+                tools: list[dict[str, Any]], work_directory: str) -> None:
+    """Body of the worker process: set up once, then run blocks until EOF.
+
+    If the setup fails, the exception ends the process with its traceback on
+    stderr, and the agent sees the worker exit before saying it is ready.
+    """
+    # The agent handles Ctrl+C and then kills this process.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    # The inherited environment holds the API keys: the generated code must
+    # not see them. Only the logging settings survive.
+    kept = {name: os.environ[name] for name in (LOG_LEVEL_ENV, LOG_FILE_ENV)
+            if name in os.environ}
+    os.environ.clear()
+    os.environ.update(kept)
+    os.chdir(work_directory)
+    configure_logging()
+    logger.debug("Entrando en worker_main")
+    logger.info("Trabajador iniciado; pid=%s, directorio=%s",
+                os.getpid(), work_directory)
+    config = SandboxConfig.model_validate(config_data)
+    _apply_worker_limits(config)
+    namespace = _build_namespace(config, tools, connection)
+    connection.send({"type": "ready"})
+    logger.info("Trabajador listo para recibir bloques consecutivos")
+    while True:
         try:
-            self._temporary = tempfile.TemporaryDirectory(
-                prefix="agent-smith-")
-            self.work_directory = Path(self._temporary.name)
-            logger.debug("Directorio temporal del trabajador creado: %s",
-                         self.work_directory)
-            script = Path(__file__).resolve().parents[1] / "json_worker.py"
-            self.worker = await asyncio.create_subprocess_exec(
-                sys.executable, "-u", str(script),
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=None, cwd=self.work_directory,
-                env={"PYTHONIOENCODING": "utf-8", "PYTHONNOUSERSITE": "1",
-                     LOG_LEVEL_ENV: os.environ.get(LOG_LEVEL_ENV, "")},
-            )
-            with anyio.fail_after(10):
-                await _send_worker_message(self.worker, {
-                    "type": "init", "config": self.config.model_dump(),
-                    "tools": self.manual.tools if self.manual else [],
-                })
-                reply = await _read_worker_message(self.worker, self._buffer)
-                if reply["type"] == "worker_error":
-                    raise RuntimeError(reply["error"])
-                if reply["type"] != "ready":
-                    raise RuntimeError("Worker did not become ready.")
-            logger.info("Trabajador listo; pid=%s", self.worker.pid)
-        except BaseException as exc:
-            logger.error("Fallo al iniciar el trabajador: %s", exc)
-            await self.close()
-            if isinstance(exc, Exception):
-                raise RuntimeError(f"Sandbox startup failed: {exc}") from exc
-            raise
-
-    async def execute(
-        self, code: str, *, deadline: float | None = None,
-    ) -> SandboxExecution:
-        """Execute once, keeping output and serving sequential MCP requests."""
-        logger.debug("Entrando en SandboxSession.execute")
-        logger.debug("Enviando bloque al trabajador: %s caracteres", len(code))
-        if self.worker is None or self._active:
-            raise RuntimeError("Sandbox must be started and idle.")
-        self._active = True
-        result = SandboxExecution()
-        output = []
-        omitted = None
-        started = time.monotonic()
-        mcp_wait = 0.0
-
-        def remaining():
-            logger.debug("Entrando en SandboxSession.execute.remaining")
-            now = time.monotonic()
-            block = (self.config.max_execution_time_seconds
-                     - (now - started - mcp_wait))
-            return (min(block, deadline - now) if deadline is not None
-                    else block)
-
-        try:
-            with anyio.fail_after(max(0, remaining())):
-                await _send_worker_message(self.worker,
-                                           {"type": "execute", "code": code})
-            while True:
-                with anyio.fail_after(max(0, remaining())):
-                    message = await _read_worker_message(self.worker,
-                                                         self._buffer)
-                kind = message["type"]
-                if kind == "output":
-                    output.append(message["text"])
-                elif kind == "truncated":
-                    result.truncated = True
-                elif kind == "mcp_request":
-                    logger.debug("Pausando el reloj del bloque durante la "
-                                 "espera MCP; el plazo de tarea continúa")
-                    mcp_started = time.monotonic()
-                    timeout = (None if deadline is None
-                               else max(0, deadline - mcp_started))
-                    with anyio.fail_after(timeout):
-                        reply = await _dispatch_mcp(self.mcp_session, message)
-                        await _send_worker_message(self.worker, reply)
-                    mcp_wait += time.monotonic() - mcp_started
-                    logger.debug("MCP terminó; espera MCP acumulada=%.3fs; "
-                                 "reanudando reloj del bloque", mcp_wait)
-                elif kind == "done":
-                    result.final_answer = message["final_answer"]
-                    result.error = message["error"]
-                    result.truncated = message["truncated"]
-                    omitted = message["omitted"]
-                    if remaining() < 0:
-                        raise TimeoutError("Execution deadline exceeded.")
-                    break
-                elif kind == "control_exit":
-                    logger.warning("Interrupción del trabajador: %s",
-                                   message["exception"])
-                    if message["exception"] == "KeyboardInterrupt":
-                        raise KeyboardInterrupt()
-                    if message["exception"] == "SystemExit":
-                        raise SystemExit(message.get("code"))
-                    raise ValueError("Unknown control exception.")
-                elif kind == "worker_error":
-                    raise RuntimeError(message["error"])
-                else:
-                    raise ValueError(f"Unexpected worker message: {kind}")
-        except Exception as exc:
-            logger.error("Fallo fatal de ejecución; se conservará la salida "
-                         "parcial: %s", exc)
-            result.timed_out = isinstance(exc, TimeoutError)
-            result.worker_failed = True
-            result.error = f"{type(exc).__name__}: {exc}"
-            if result.timed_out:
-                result.error = "Execution timed out; worker state was lost."
-            try:
-                await self.close()
-            except Exception as cleanup:
-                result.error += f" Cleanup failed: {cleanup}"
-        except BaseException:
-            logger.warning("Ejecución interrumpida; cerrando el trabajador")
-            await self.close()
-            raise
-        finally:
-            self._active = False
-        result.output = "".join(output)
-        if result.truncated:
-            count = (str(omitted) if omitted is not None
-                     else "an unknown number of")
-            result.output += (f"\n[Output truncated: {count} characters "
-                              "omitted.]")
-        logger.info(
-            "Bloque recibido: error=%s, timeout=%s, trabajador perdido=%s, "
-            "final=%s, salida=%s caracteres",
-            result.error is not None, result.timed_out, result.worker_failed,
-            result.final_answer is not None, len(result.output),
-        )
-        return result
-
-    async def close(self) -> None:
-        """Reap only our process, then release only our temporary files."""
-        logger.debug("Entrando en SandboxSession.close")
-        logger.info("Cerrando trabajador y directorio temporal")
-        errors = []
-        with anyio.CancelScope(shield=True):
-            try:
-                if self.worker is not None:
-                    if self.worker.stdin is not None:
-                        logger.debug("Cerrando stdin para enviar EOF al "
-                                     "trabajador")
-                        self.worker.stdin.close()
-                    # communicate also drains pipes; wait alone can block on
-                    # full output.
-                    for action, timeout in ((None, 0.3), ("terminate", 0.5),
-                                            ("kill", 1.0)):
-                        if action and self.worker.returncode is None:
-                            logger.warning("El trabajador sigue activo; "
-                                           "enviando %s", action)
-                            try:
-                                getattr(self.worker, action)()
-                            except ProcessLookupError:
-                                pass
-                        try:
-                            await asyncio.wait_for(self.worker.communicate(),
-                                                   timeout)
-                            logger.debug("Trabajador recogido; código de "
-                                         "salida=%s", self.worker.returncode)
-                            break
-                        except asyncio.TimeoutError:
-                            if action == "kill":
-                                raise RuntimeError(
-                                    "Worker did not exit after kill.")
-            except Exception as exc:
-                logger.error("Fallo al cerrar el trabajador: %s", exc)
-                errors.append(str(exc))
-            finally:
-                self.worker = None
-                if self._temporary is not None:
-                    try:
-                        self._temporary.cleanup()
-                        logger.debug("Directorio temporal del trabajador "
-                                     "eliminado")
-                    except Exception as exc:
-                        logger.error("No se pudo eliminar el directorio "
-                                     "temporal: %s", exc)
-                        errors.append(str(exc))
-                self._temporary = self.work_directory = None
-                self._buffer.clear()
-                self._active = False
-        if errors:
-            raise RuntimeError("Sandbox cleanup failed: " + "; ".join(errors))
-        logger.debug("Sandbox cerrado correctamente")
+            message = connection.recv()
+        except EOFError:
+            logger.info("El agente cerró la conexión; fin del trabajador")
+            return
+        execute_block(message["code"], namespace, connection)

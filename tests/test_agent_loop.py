@@ -1,13 +1,12 @@
 """Exercise the common loop with known code and scripted completion metadata."""
 
-import asyncio
 import time
 from types import SimpleNamespace
 
 from agent_smith.agent_loop import run_agent_loop, trim_history, MINIMUM_HISTORY_MESSAGES
 from agent_smith.models import AgentLimits, SandboxConfig
 from agent_smith.providers import CompletionResponse
-from agent_smith.sandbox import SandboxSession
+from agent_smith.sandbox_session import SandboxSession
 
 
 class ScriptedProvider:
@@ -16,7 +15,7 @@ class ScriptedProvider:
         self.replies = iter(replies)
         self.histories = []
 
-    async def complete(self, messages, **kwargs):
+    def complete(self, messages, **kwargs):
         self.histories.append(list(messages))
         text = next(self.replies)
         return CompletionResponse(text, 100, 50, 1, "https://example.invalid/v1", "fixture", 0, 1)
@@ -24,11 +23,11 @@ class ScriptedProvider:
 
 def run(replies, **limits):
     provider = ScriptedProvider(replies)
-    async def scenario():
+    def scenario():
         sandbox = SandboxSession(SandboxConfig(allowed_directories=[]))
         try:
-            await sandbox.start()
-            result = await run_agent_loop(
+            sandbox.start()
+            result = run_agent_loop(
                 task_id="fixture", benchmark="mbpp", system_prompt="system", task_prompt="task",
                 provider=provider, sandbox=sandbox,
                 limits=AgentLimits(max_iterations=limits.get("iterations", 3),
@@ -38,8 +37,8 @@ def run(replies, **limits):
             )
             return result
         finally:
-            await sandbox.close()
-    return asyncio.run(scenario()), provider
+            sandbox.close()
+    return scenario(), provider
 
 
 def test_extraction_feedback_and_final_step_boundary():
@@ -137,22 +136,22 @@ def test_an_unusable_response_becomes_an_observation_instead_of_ending_the_task(
 
     class Proveedor:
         config = SimpleNamespace()
-        async def complete(self, messages, **kwargs):
+        def complete(self, messages, **kwargs):
             return respuestas.pop(0)
 
     class Caja:
-        async def execute(self, code, deadline=None):
+        def execute(self, code, deadline=None):
             from agent_smith.sandbox import SandboxExecution
             return SandboxExecution(final_answer="listo")
 
     from agent_smith.models import AgentLimits
-    resultado = asyncio.run(run_agent_loop(
+    resultado = run_agent_loop(
         task_id="t", benchmark="swebench", system_prompt="s", task_prompt="p",
         provider=Proveedor(), sandbox=Caja(),
         limits=AgentLimits(max_iterations=5, max_input_tokens=1000,
                            max_output_tokens=1000, max_time_seconds=60),
         started_at=time.monotonic(),
-    ))
+    )
 
     assert resultado.success is True
     assert resultado.iterations == 2

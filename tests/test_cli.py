@@ -36,5 +36,5 @@ def test_mbpp_cli_handles_invalid_task_file(tmp_path, capsys, monkeypatch, log_l
     if log_level is None:
         assert captured.err == ""
     else:
-        assert "Error: Invalid JSON file" in captured.err
+        assert "Error:" in captured.err and "Invalid JSON" in captured.err
     assert not output_path.exists()

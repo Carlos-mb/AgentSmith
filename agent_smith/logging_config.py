@@ -1,15 +1,27 @@
-"""Opt-in application logging on stderr, apart from worker/MCP JSON stdout."""
+"""Opt-in application logging.
+
+AGENT_SMITH_LOG_LEVEL chooses the level; unset or empty means silence. Logs
+go to stderr, never stdout, which the MCP stdio transport uses.
+
+With DEBUG, the same records are also appended to a log file, so a whole run
+can be read afterwards: functions entered, decisions taken, connections,
+every message sent to and received from the LLM, the sandbox and MCP. The
+file is AGENT_SMITH_LOG_FILE if set, otherwise logs/agent_smith_<time>.log.
+Its name is saved in the environment, so the sandbox worker and the MCP
+server started afterwards write to the same file.
+"""
 
 from __future__ import annotations
 
 import logging
-import argparse
 import os
 import sys
+import time
 from typing import Iterable
 
 
 LOG_LEVEL_ENV = "AGENT_SMITH_LOG_LEVEL"
+LOG_FILE_ENV = "AGENT_SMITH_LOG_FILE"
 _LEVELS = {name: getattr(logging, name) for name in (
     "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL",
 )}
@@ -52,19 +64,28 @@ def configure_logging() -> None:
         "PROVIDER_API_KEY", "PROVIDER_API_KEY_2", "OPENROUTER_API_KEY",
         "OPENROUTER_API_KEY_2", "GEMINI_API_KEY", "GEMINI_API_KEY_2",
     ))
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setLevel(level)
-    handler.addFilter(_ApplicationFilter())
-    handler.setFormatter(_SecretFormatter(
-        "%(asctime)s %(levelname)s [pid=%(process)d] "
-        "%(name)s.%(funcName)s:%(lineno)d | %(message)s",
-        datefmt="%H:%M:%S",
-    ))
-    logging.basicConfig(level=level, handlers=[handler], force=True)
+    handlers = [logging.StreamHandler(sys.stderr)]
+    if level == logging.DEBUG:
+        if not os.environ.get(LOG_FILE_ENV):
+            os.environ[LOG_FILE_ENV] = os.path.abspath(os.path.join(
+                "logs", time.strftime("agent_smith_%Y%m%d_%H%M%S.log")))
+        path = os.environ[LOG_FILE_ENV]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        handlers.append(logging.FileHandler(path, encoding="utf-8"))
+    for handler in handlers:
+        handler.setLevel(level)
+        handler.addFilter(_ApplicationFilter())
+        handler.setFormatter(_SecretFormatter(
+            "%(asctime)s %(levelname)s [pid=%(process)d] "
+            "%(name)s.%(funcName)s:%(lineno)d | %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+    logging.basicConfig(level=level, handlers=handlers, force=True)
     logging.getLogger("agent_smith").setLevel(level)
     # Application messages describe these operations without exposing SDK
     # internals.
-    for name in ("httpx", "httpcore", "docker", "urllib3", "mcp", "asyncio"):
+    for name in ("openai", "httpx", "httpcore", "docker", "urllib3", "mcp",
+                 "asyncio"):
         logging.getLogger(name).setLevel(logging.CRITICAL + 1)
     logging.raiseExceptions = False
     _configured = True
@@ -83,11 +104,3 @@ def get_logger(name: str) -> logging.Logger:
     if not name.startswith("agent_smith.") and name != "agent_smith":
         name = "agent_smith." + name
     return logging.getLogger(name)
-
-
-class LoggingArgumentParser(argparse.ArgumentParser):
-    """Keep argparse validation; make its errors follow the log level."""
-
-    def error(self, message: str) -> None:
-        get_logger("cli").error("Argumentos CLI inválidos: %s", message)
-        self.exit(2)

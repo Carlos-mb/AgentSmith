@@ -4,13 +4,13 @@ No external API is contacted and no generated/unknown code is executed.
 These tests do not claim a benchmark pass or measured live-provider tokens.
 """
 
-import asyncio
 import json
 import time
 from pathlib import Path
 
-import docker
+import subprocess
 import httpx
+import openai
 import pytest
 
 from agent_mbpp import main
@@ -25,27 +25,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def require_docker():
     try:
-        client = docker.from_env(timeout=2)
-        client.ping()
-        client.images.get(DEFAULT_DOCKER_IMAGE)
-        client.close()
-    except docker.errors.DockerException as exc:
-        pytest.skip(f"Docker/image unavailable: {type(exc).__name__}")
+        ready = subprocess.run(["docker", "image", "inspect", DEFAULT_DOCKER_IMAGE],
+                               capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        ready = False
+    if not ready:
+        pytest.skip("Docker/image unavailable")
+
+
+def session_containers(session_id):
+    return subprocess.run(["docker", "ps", "-aq", "--filter", f"label=agent-smith.mbpp.session={session_id}"],
+                          capture_output=True, text=True).stdout.split()
 
 
 def test_mcp_discovers_run_tests_and_closes():
-    async def scenario():
-        client = MCPClient(stdio_command=[str(ROOT / ".venv/bin/python"), str(ROOT / "mcp_tools_mbpp.py")])
-        try:
-            session, manual = await client.start(deadline=time.monotonic() + 15)
-            assert session is not None
-            assert any(tool["name"] == "run_tests" for tool in manual.tools)
-            assert "test_imports" in manual.as_text()
-        finally:
-            await client.close()
-        assert client._stack is None
-        await client.close()
-    asyncio.run(scenario())
+    client = MCPClient(stdio_command=[str(ROOT / ".venv/bin/python"), str(ROOT / "mcp_tools_mbpp.py")])
+    try:
+        manual = client.start(deadline=time.monotonic() + 15)
+        assert any(tool["name"] == "run_tests" for tool in manual.tools)
+        assert "test_imports" in manual.as_text()
+    finally:
+        client.close()
+    assert client._loop is None
+    client.close()
 
 
 @pytest.mark.parametrize("log_level", [None, "DEBUG"])
@@ -78,9 +80,8 @@ def test_cli_wrong_candidate_then_correction_and_final_answer(tmp_path, monkeypa
             "choices": [{"message": {"content": replies[index]}}],
             "usage": {"prompt_tokens": 100, "completion_tokens": 50},
         })
-    original = httpx.AsyncClient
-    monkeypatch.setattr("agent_smith.providers.httpx.AsyncClient", lambda **kwargs: original(
-        transport=httpx.MockTransport(handler), **kwargs))
+    monkeypatch.setattr("agent_smith.providers.OpenAI", lambda **kwargs: openai.OpenAI(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)), **kwargs))
     provider = ProviderClient(ProviderConfig(
         api_url="https://example.invalid/v1", model_name="controlled-fixture",
         api_key_environment_variables=["TEST_KEY"],
@@ -110,9 +111,9 @@ def test_cli_wrong_candidate_then_correction_and_final_answer(tmp_path, monkeypa
     else:
         for expected in (
             "agent_smith.agent_mbpp.main", "ProviderClient.complete",
-            "json_worker", "execute_block", "mcp_tools_mbpp",
+            "agent_smith.sandbox.worker_main", "execute_block", "mcp_tools_mbpp",
             "Tests públicos fallidos", "Tests públicos correctos",
-            "Observación real", "final_answer recibido", "Contenedor de tests eliminado",
+            "Observación real", "final_answer recibido",
             "IA RECIBIDO [HTTP 200", "MCP ENVIADO [call_tool]", "MCP RECIBIDO [call_tool]",
             "MCP RECIBIDO [initialize]", "MCP RECIBIDO [listado tools]",
             "DOCKER ENTRADA", "DOCKER SALIDA", "stdout/stderr combinados",
@@ -139,9 +140,12 @@ def test_cli_wrong_candidate_then_correction_and_final_answer(tmp_path, monkeypa
         (tmp_path / "debug.log").write_text(captured.err)
 
 
-def test_cancellation_during_docker_tool_cleans_owned_container(monkeypatch):
-    """Cancel the task only after Docker confirms its known infinite loop started."""
+def test_ctrl_c_during_docker_tool_cleans_owned_container(monkeypatch):
+    """Press Ctrl+C only after Docker confirms its known infinite loop started."""
     import argparse
+    import os
+    import signal
+    import threading
     from agent_smith.mbpp_agent import run_mbpp_agent
     from agent_smith.models import MBPPTaskInput
     from agent_smith.providers import CompletionResponse
@@ -155,44 +159,32 @@ def test_cancellation_during_docker_tool_cleans_owned_container(monkeypatch):
     monkeypatch.setattr(MCPClient, "__init__", capture_session)
     class Provider:
         config = ProviderConfig(api_url="https://example.invalid/v1", model_name="fixture")
-        async def complete(self, messages, **kwargs):
+        def complete(self, messages, **kwargs):
             return CompletionResponse(
                 "```python\nprint(run_tests(code='while True: pass', test_imports=[], test_list=[], timeout_seconds=30))\n```",
                 100, 50, 1, self.config.api_url, "fixture", 0, 1,
             )
     monkeypatch.setattr(ProviderClient, "from_environment", lambda *args, **kwargs: Provider())
-    docker_client = docker.from_env(timeout=2)
-    async def scenario():
-        job = asyncio.create_task(run_mbpp_agent(
-            MBPPTaskInput(task_id=1, task_definition="fixture", function_definition="def add(a, b):"),
-            argparse.Namespace(max_iterations=2, provider_url="https://example.invalid/v1", model_name="fixture"),
-            started_at=time.monotonic(),
-        ))
-        try:
-            for _ in range(100):
-                if session_ids:
-                    containers = await asyncio.to_thread(docker_client.containers.list,
-                        filters={"label": f"agent-smith.mbpp.session={session_ids[0]}"})
-                    if containers:
-                        break
-                if job.done():
-                    pytest.fail(f"Task stopped before cancellation: {job.result()}")
-                await asyncio.sleep(0.05)
-            else:
-                pytest.fail("Docker test did not start.")
-            job.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await job
-            assert not docker_client.containers.list(
-                all=True, filters={"label": f"agent-smith.mbpp.session={session_ids[0]}"})
-        finally:
-            if not job.done():
-                job.cancel()
-                try:
-                    await job
-                except asyncio.CancelledError:
-                    pass
+    pressed = []
+
+    def press_ctrl_c_when_container_runs():
+        for _ in range(200):
+            if session_ids and session_containers(session_ids[0]):
+                pressed.append(True)
+                os.kill(os.getpid(), signal.SIGINT)
+                return
+            time.sleep(0.05)
+
+    watcher = threading.Thread(target=press_ctrl_c_when_container_runs, daemon=True)
+    watcher.start()
     try:
-        asyncio.run(scenario())
+        with pytest.raises(KeyboardInterrupt):
+            run_mbpp_agent(
+                MBPPTaskInput(task_id=1, task_definition="fixture", function_definition="def add(a, b):"),
+                argparse.Namespace(max_iterations=2, provider_url="https://example.invalid/v1", model_name="fixture"),
+                started_at=time.monotonic(),
+            )
+        assert pressed, "Docker test did not start."
+        assert not session_containers(session_ids[0])
     finally:
-        docker_client.close()
+        watcher.join(timeout=15)

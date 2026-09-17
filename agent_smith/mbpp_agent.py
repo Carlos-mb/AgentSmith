@@ -11,14 +11,13 @@ import sys
 import time
 import uuid
 
-import anyio
-
 from agent_smith.agent_loop import run_agent_loop
 from agent_smith.mbpp_tools import cleanup_mbpp_containers
 from agent_smith.mcp_client import MCPClient
 from agent_smith.models import AgentLimits, MBPPTaskInput, SolutionOutput
 from agent_smith.providers import ProviderClient
-from agent_smith.sandbox import SandboxSession, load_sandbox_config
+from agent_smith.sandbox import load_sandbox_config
+from agent_smith.sandbox_session import SandboxSession
 
 logger = get_logger('agent_smith.mbpp_agent')
 
@@ -82,7 +81,7 @@ def _build_mbpp_limits(max_iterations: int) -> AgentLimits:
     )
 
 
-async def run_mbpp_agent(
+def run_mbpp_agent(
     task: MBPPTaskInput, args: argparse.Namespace, *, started_at: float,
 ) -> SolutionOutput:
     logger.debug("Entrando en run_mbpp_agent")
@@ -134,19 +133,18 @@ async def run_mbpp_agent(
 
         # MCP client also starts MCP server
 
-        session, manual = await client.start(deadline=deadline)
+        manual = client.start(deadline=deadline)
         logger.info("MCP listo: %s herramientas descubiertas",
                     len(manual.tools))
         server_started = True
         if not any(t["name"] == "run_tests" for t in manual.tools):
             raise RuntimeError("The MCP server did not advertise run_tests.")
         result.system_prompt = build_mbpp_system_prompt(manual.as_text())
-        sandbox = SandboxSession(config, session, manual)
-        with anyio.fail_after(max(0, deadline - time.monotonic())):
-            await sandbox.start()
+        sandbox = SandboxSession(config, client, manual)
+        sandbox.start()
         logger.debug("Inicializando test_imports y test_list en el "
                      "trabajador persistente")
-        prepared = await sandbox.execute(
+        prepared = sandbox.execute(
             f"test_imports = {task.test_imports!r}\n"
             f"test_list = {task.test_list!r}",
             deadline=deadline,
@@ -156,7 +154,7 @@ async def run_mbpp_agent(
                                or "Could not prepare the public tests.")
         logger.info("Trabajador preparado; comenzando "
                     "Thought → Code → Observation")
-        result = await run_agent_loop(
+        result = run_agent_loop(
             task_id=str(task.task_id), benchmark="mbpp",
             system_prompt=result.system_prompt,
             task_prompt=build_mbpp_task_prompt(task),
@@ -176,7 +174,7 @@ async def run_mbpp_agent(
             if resource is not None:
                 try:
                     logger.debug("Cerrando %s", type(resource).__name__)
-                    await resource.close()
+                    resource.close()
                 except Exception as exc:
                     logger.error("No se pudo cerrar %s: %s",
                                  type(resource).__name__, exc)
@@ -185,9 +183,7 @@ async def run_mbpp_agent(
             try:
                 # A killed MCP server can no longer remove its own containers.
                 # The task label limits this fallback to our own resources.
-                with anyio.CancelScope(shield=True):
-                    await anyio.to_thread.run_sync(cleanup_mbpp_containers,
-                                                   session_id)
+                cleanup_mbpp_containers(session_id)
             except Exception as exc:
                 logger.error("Fallo en la limpieza Docker de respaldo: %s",
                              exc)

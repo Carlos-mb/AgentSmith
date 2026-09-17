@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 import httpx
+import openai
 import pytest
 
 from agent_swebench import main
@@ -62,9 +63,8 @@ def test_cli_explores_edits_and_submits_the_real_patch(tmp_path, monkeypatch):
             "usage": {"prompt_tokens": 120, "completion_tokens": 40},
         })
 
-    original = httpx.AsyncClient
-    monkeypatch.setattr("agent_smith.providers.httpx.AsyncClient", lambda **kwargs: original(
-        transport=httpx.MockTransport(handler), **kwargs))
+    monkeypatch.setattr("agent_smith.providers.OpenAI", lambda **kwargs: openai.OpenAI(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)), **kwargs))
     provider = ProviderClient(ProviderConfig(
         api_url="https://example.invalid/v1", model_name="controlled-fixture",
         api_key_environment_variables=["TEST_KEY"],
@@ -128,9 +128,8 @@ def test_submitting_without_editing_is_not_a_success(tmp_path, monkeypatch):
             "usage": {"prompt_tokens": 100, "completion_tokens": 30},
         })
 
-    original = httpx.AsyncClient
-    monkeypatch.setattr("agent_smith.providers.httpx.AsyncClient", lambda **kwargs: original(
-        transport=httpx.MockTransport(handler), **kwargs))
+    monkeypatch.setattr("agent_smith.providers.OpenAI", lambda **kwargs: openai.OpenAI(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)), **kwargs))
     provider = ProviderClient(ProviderConfig(
         api_url="https://example.invalid/v1", model_name="controlled-fixture",
         api_key_environment_variables=["TEST_KEY"],

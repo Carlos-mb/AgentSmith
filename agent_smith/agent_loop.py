@@ -9,7 +9,8 @@ import time
 from agent_smith.code_extraction import extract_agent_code
 from agent_smith.models import AgentLimits, SolutionOutput, StepMetrics
 from agent_smith.providers import ProviderClient
-from agent_smith.sandbox import SandboxExecution, SandboxSession
+from agent_smith.sandbox import SandboxExecution
+from agent_smith.sandbox_session import SandboxSession
 
 logger = get_logger('agent_smith.agent_loop')
 
@@ -91,7 +92,7 @@ def build_observation(
     return "\n".join(parts)
 
 
-async def run_agent_loop(
+def run_agent_loop(
     *,
     task_id: str,
     benchmark: str,
@@ -141,7 +142,7 @@ async def run_agent_loop(
             # Share the remaining input budget among the remaining iterations.
             share = ((limits.max_input_tokens - input_tokens)
                      // (limits.max_iterations - number + 1))
-            completion = await provider.complete(
+            completion = provider.complete(
                 trim_history(messages, share),
                 max_input_tokens=limits.max_input_tokens - input_tokens,
                 max_output_tokens=limits.max_output_tokens - output_tokens,
@@ -200,7 +201,7 @@ async def run_agent_loop(
                             "extraído", number)
                 logger.debug("Código que se ejecutará:\n%s", code)
                 step.sandbox_input = code
-                execution = await sandbox.execute(code, deadline=deadline)
+                execution = sandbox.execute(code, deadline=deadline)
             else:
                 logger.warning("Iteración %s sin código ejecutable: %s",
                                number, feedback)
