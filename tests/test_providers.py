@@ -50,9 +50,15 @@ def test_default_models_configuration_serves_both_exams():
     assert path.is_file(), "the adapters default to configs/models_template.json"
 
     swebench = ProviderClient.from_environment(
-        "https://api.mistral.ai/v1", "codestral-2508", path, {"MISTRAL_API_KEY": "k"})
-    assert swebench.api_keys == ["k"]
+        "https://api.groq.com/openai/v1", "qwen/qwen3.8-27b", path,
+        {"GROQ_API_KEY": "a", "GROQ_API_KEY_2": "b", "GROQ_API_KEY_3": "c"})
+    assert swebench.api_keys == ["a", "b", "c"]
     assert swebench.config.stop_sequences == ["<end_code>", "Observation:"]
+
+    backup = ProviderClient.from_environment(
+        "https://api.mistral.ai/v1", "codestral-2508", path, {"MISTRAL_API_KEY": "k"})
+    assert backup.api_keys == ["k"]
+    assert backup.config.stop_sequences == ["<end_code>", "Observation:"]
 
     mbpp = ProviderClient.from_environment(
         "https://openrouter.ai/api/v1", "inclusionai/ling-3.0-flash-vl:free", path,
