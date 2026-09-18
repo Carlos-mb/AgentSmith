@@ -31,6 +31,18 @@ passing in both ablation variants. With `sympy__sympy-14711` it is the second po
 task that goes one in two. Both runs of that day, with their three files each, are
 in `noop_edit_fix_20260916/`, which also documents the `edit_file` defect they
 exposed.
+
+**Second correction, 18 September:** "one in two" on `sympy__sympy-14711` is now
+optimistic. Six more runs of that task with `codestral-2508` that day, three per
+condition of the ablation in `ablation/closing_example/` and
+`ablation/without_closing_example/`, **all failed**. Its record there is closer
+to one in nine. It remains the first SWE-bench backup — it scores 3/3 when that
+task is not drawn — but the figure to quote is the lower one. Those runs also
+showed the model drifting within the hour: replies fell from about 2,100
+characters to 215 with a stray `<!-- omit in toc -->` appended, and it moved
+from editing compulsively to looping on `read_file`. The README in
+`ablation/closing_example/` records both.
+
 `django__django-12308` and `scikit-learn__scikit-learn-11310` are **not** in the
 pool. They are listed because they were run and failed. (An earlier version of
 this file wrongly counted them in a pool of seven.)

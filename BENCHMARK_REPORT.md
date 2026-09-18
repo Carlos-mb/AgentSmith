@@ -1,6 +1,6 @@
 # Benchmark report — SWE-bench model comparison
 
-Ten models on the same three SWE-bench tasks, plus five ablations. Every
+Ten models on the same three SWE-bench tasks, plus six ablations. Every
 number below is read from a `solution.json` in `benchmark_runs/`, and every
 result was checked with `moulinette_eval validate swebench`, never with
 `--skip-metrics`. Failures are reported as they happened.
@@ -9,7 +9,8 @@ result was checked with `moulinette_eval validate swebench`, never with
 
 **Agent.** This repository at commit `c5853a8` for sections 2 to 5.2. The
 `codestral-2508` runs and sections 5.3 to 5.5 use the later code with the two
-fixes of section 7. One Thought → Code →
+fixes of section 7. Section 5.6 was measured on 18 September 2026 at commit
+`6f6949b`, after the 17 September simplification. One Thought → Code →
 Observation loop, nine MCP tools, the task container held open by the agent's
 stdin. Exam limits: 30 iterations, 300,000 input tokens, 10,000 output tokens,
 900 seconds. Every model uses the same prompt and `configs/models_template.json`:
@@ -439,12 +440,84 @@ to `run4/`.
   runs the difference is within the noise. The change was reverted; the code
   in this repository does not contain it.
 
+### 5.6 SWE-bench: a second prompt example showing how to close the cycle (discarded)
+
+**Change.** The system prompt carries one example, and it shows how to *find*
+code (`search_function_or_class_definition_in_code`). Section 4 says that is
+not where runs are lost: every passing run touches the file it will patch by
+step 1–3, while models spend 2 or 3 iterations and up to 60% of the input
+budget after their tests pass, re-running tests and printing `git diff` before
+`final_answer`. So a second example was added after the first, showing the
+*end* of the cycle: one block that calls `edit_file` and `run_tests` together,
+followed by "As soon as an Observation shows the tests passing, submit in the
+next response. Do not re-run the tests and do not print git diff first: those
+extra steps are the most expensive, because each one resends the whole
+history." Its paths are neutral (`/testbed/package/module.py`), unlike the
+reference project's, which names real sympy files and could send the model to
+an invented path on a django or xarray task. Nothing else changed. Same model,
+configuration and task, three runs per condition on 18 September, alternating
+between conditions so the hour-to-hour variation of section 3 is shared evenly.
+
+| Run | Without the example | With the example |
+| --- | --- | --- |
+| 1 | FAIL · 28 / 206,938 / 10,000 | **PASS** · 14 / 51,178 / 942 |
+| 2 | FAIL · 30 / 162,897 / 10,000 | FAIL · 29 / 288,921 / 2,316 |
+| 3 | FAIL · 27 / 169,217 / 10,000 | FAIL · 27 / 256,265 / 10,000 |
+| **Total** | 0/3 | 1/3 |
+| Average input tokens of the failing runs | 179,684 | 272,593 |
+
+Tool calls over the same six runs:
+
+| Run | `edit_file` without / with | `run_tests` without / with |
+| --- | --- | --- |
+| 1 | 21 / 5 | 3 / 5 |
+| 2 | 0 / 14 | 0 / 14 |
+| 3 | 16 / 15 | 1 / 4 |
+
+Run 2 without the example never edited anything: it spent 29 of its 30 steps
+on `read_file`.
+
+Evidence: `benchmark_runs/swebench_20260914/ablation/without_closing_example/`
+and `…/ablation/closing_example/`, then `codestral-2508/sympy-14711/run1/` to
+`run3/`, with a README recording the exact text that was added.
+
+**What was learned.**
+
+- **The example is obeyed, and that is measurable.** Without it the model edits
+  without testing; with it the two go together, exactly 14 and 14 in run 2.
+  The mechanism works as intended.
+- **It changes what the loop repeats, not whether it repeats.** Without the
+  example, run 1 sent the same `edit_file` 12 times, each answered `found 0`,
+  and run 2 sent the same four-line `read_file` 26 times. With it, run 2 sent
+  `print(run_tests())` 14 times. This is section 5.5's finding again: on this
+  task the model repeats itself whatever it is told.
+- **One pass out of three is not a result.** Section 5.1 measured the noise;
+  this sits inside it. And the failing runs with the example cost 272,593
+  input tokens on average against 179,684 — when it fails, it fails more
+  expensively, on a benchmark graded by efficiency.
+- **Decision: discarded.** The change was reverted; the code in this repository
+  does not contain it.
+
+**What it found on the way.** Across the 155 steps, the model never called an
+invented function and never tried to import the project from the sandbox.
+What it did do was waste 47 steps on refused edits, **31 of them `found 0`** —
+30% of every step taken. `edit_file` already reports *where* the matches are
+when `old_str` appears more than once (that hint was added after a model
+retried blindly for eight iterations); it says nothing when it appears zero
+times. Whether closing that gap helps is **unmeasured**: a follow-up run the
+same morning was invalidated because `codestral-2508` drifted within the hour —
+172 steps with 128 `read_file` against 34 `edit_file`, only 2 `found 0`
+refusals against 31 here, and replies down from about 2,100 characters to 215
+with a stray `<!-- omit in toc -->` appended. Section 3's "the same model
+varies with the hour" applies to Mistral too, and that round was discarded
+rather than reported.
+
 ## 6. Conclusions
 
 **Selected: `qwen/qwen3.8-27b` (Groq).** It is the only model that solves
-`sympy__sympy-14711` reliably: five passes in five attempts, against one in
-three for `codestral-2508`, the pool task that decides whether a run scores 2/3
-or 3/3. With one Groq account it passed all six pool tasks: 3/3 on the matrix
+`sympy__sympy-14711` reliably: five passes in five attempts, against roughly
+one in nine for `codestral-2508` (see the update below), the pool task that
+decides whether a run scores 2/3 or 3/3. With one Groq account it passed all six pool tasks: 3/3 on the matrix
 (19 iterations, 54,448 input tokens), `xarray-4629` in 6 iterations,
 `scikit-learn-13439` in 8, and `sympy-14711` three times. It submits in the step
 right after its tests pass. In the real `exam_swebench.sh` it scored 2/3 with
@@ -464,6 +537,14 @@ each, and scored 3/3 in the real `exam_swebench.sh`, including
 step right after its tests pass, and it needed no retry: its free tier allowed
 125 requests and 625,000 tokens per minute. It depends on section 5.4's stop
 sequence; without it, it scored 4/6.
+
+**Update, 18 September.** Its record on `sympy__sympy-14711` is worse than the
+"one in two" reported earlier: the six runs of section 5.6 all failed, which
+puts it near one in nine. It stays the first backup — the other five pool tasks
+are solid and it is the cheapest model measured — but its weakness is that one
+task, so a run that draws it is likely a 2/3. Those runs also caught it
+drifting within a single hour (section 5.6), which is a second reason to check
+it on the day rather than trust a stored figure.
 
 **Second backup: `gemini-3.5-flash-lite`.** It passed all nine of its runs on
 the matrix tasks, three on 14 September plus six in the ablation, with one
