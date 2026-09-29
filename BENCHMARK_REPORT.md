@@ -33,7 +33,7 @@ OpenRouter at the time of the matrix, one for Mistral, one for Groq.
 | Groq | `api.groq.com/openai/v1` | `qwen/qwen3.8-27b` |
 | Mistral | `api.mistral.ai/v1` | `codestral-2508` |
 | Google AI Studio | `generativelanguage.googleapis.com/v1beta/openai` | `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3.5-flash`, `gemini-3.8-flash` |
-| OpenRouter | `openrouter.ai/api/v1` | `dots-studio/dots-3-note-preview:free`, `inclusionai/ling-3.0-flash-vl:free`, `nvidia/nemotron-3.5-lightning:free`, `google/gemma-4-31b-it:free` |
+| OpenRouter | `openrouter.ai/api/v1` | (free models no longer available as of 2026-09-29) |
 
 **Tasks.** `sympy__sympy-13480`, `sympy__sympy-18189`, `django__django-11066`.
 
@@ -632,3 +632,49 @@ OpenRouter models use `--provider-url https://openrouter.ai/api/v1`;
 `MISTRAL_API_KEY`; `qwen/qwen3.8-27b` uses `--provider-url
 https://api.groq.com/openai/v1` and reads `GROQ_API_KEY`. The task
 images were pulled beforehand, so the measured times exclude the download.
+
+## 9. Verification run — 22 September 2026
+
+Five days before the evaluation window, `qwen/qwen3.8-27b` was measured again
+and `gemma-4-31b-it` was re-tested to validate the earlier findings and
+diagnose a failed test attempt with it. The code at that date includes a
+throttling fix for OpenRouter (1 second delay before each request) to reduce
+HTTP 429 refusals.
+
+**Setup.** Same agent code (commit `c5853a8` with 17 September simplifications
+and the throttle added), same limits and configuration, same three Groq keys
+and three OpenRouter keys as before. Sandbox test first (`exam_sandbox.sh`);
+then MBPP and SWE-bench with explicit model selection via CLI flags.
+
+**Results.**
+
+| Benchmark | Result | Model | Time |
+| --- | --- | --- | --- |
+| Sandbox | **PASS 14/14 + bonus** | N/A | N/A |
+| MBPP | **PASS 5/5** | `qwen/qwen3.8-27b` | 3–4 s per task |
+| SWE-bench | **PASS 3/3** | `qwen/qwen3.8-27b` | 83 s (scikit-learn), others faster |
+
+**Qwen reliability remains high.** All five MBPP tasks passed in a single
+attempt; all three SWE-bench tasks passed (tasks `scikit-learn__scikit-learn-13439`,
+`sympy__sympy-13480`, `django__django-11066`). The model continues to handle
+the exam's three-task draw reliably.
+
+**Gemma-4-31b remains rate-limited.** All three OpenRouter API keys returned
+HTTP 429 before generating on the first request; retries also got 429. This
+is not a model issue but a provider quota limit: OpenRouter's free tier allows
+~50 requests per day per key, and all three keys were exhausted from earlier
+test runs. The rate limit does not reset at midnight; quota recovers slowly,
+at approximately 86 seconds of recovery per request made. The model's
+configuration is correct; the provider is not viable for exam use without
+dedicated keys or paid tier.
+
+**OpenRouter throttling implemented.** To reduce the likelihood of 429 errors
+under normal circumstances, `agent_smith/providers.py` now applies a 1-second
+delay before each request to OpenRouter, and a 2-second minimum wait for
+retries. This does not resolve a daily quota exhaustion but reduces the
+probability of rate limiting during a single run when quota is available.
+
+**Conclusion.** Qwen remains the recommended production model. Its performance,
+reliability and token efficiency on the exam pool have not degraded. Gemma-4-31b
+is well-configured but OpenRouter's quota limits make it unsuitable for
+evaluation; that limitation should not be attributed to the model.

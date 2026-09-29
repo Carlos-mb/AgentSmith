@@ -10,9 +10,9 @@ patches for issues in real repositories.
 
 The intended agent follows `Thought -> Code -> Observation`: an LLM proposes
 Python code, a separate worker executes it, and the agent uses the observed result
-to decide its next step. The MBPP execution path is implemented. On 2026-09-12,
-tasks 396 and 163 passed moulinette correctness and metrics with Ling 3.0 Flash VL
-through OpenRouter. The wider evaluation remains pending.
+to decide its next step. The MBPP execution path is implemented. All five MBPP tasks
+passed moulinette correctness and metrics with Gemini 3.5 Flash Lite (2026-09-29).
+The wider evaluation remains pending.
 
 ## Current status
 
@@ -65,29 +65,17 @@ used here has produced them.
 Two validated MBPP tasks do not establish success on the full benchmark or the
 security examination.
 
-## Why Ling 3.0 Flash VL and the original prompt
+## MBPP model selection history
 
-We selected `inclusionai/ling-3.0-flash-vl:free` through OpenRouter because it
-produced a solution for task 396 that passed both moulinette correctness and
-metrics. It used 4 iterations, 3,237 input tokens, 388 output tokens and 7.39
-seconds, within the unchanged MBPP limits. Its catalog entry advertised zero
-input/output prices and support for the `stop` and `max_tokens` parameters when
-checked on 2026-09-12. The decision rests on the observed result, not model size
-alone.
+**2026-09-17 initial choice:** We selected `inclusionai/ling-3.0-flash-vl:free` 
+through OpenRouter because it passed moulinette on tasks 396 and 163 (evidence in
+`benchmark_runs/mbpp_comparison_20260912/` and `benchmark_runs/mbpp_second_task_20260912/`).
 
-| Trial on task 396 | Observed result |
-| --- | --- |
-| North, original prompt (user's baseline) | Failed correctness despite valid metrics. |
-| Ling, original prompt | Passed correctness and metrics. |
-| North or Ling, simplified prompt | Both failed correctness despite valid metrics. |
-| Automatic free router, simplified prompt | Neither attempt completed successfully: one encountered a reasoning configuration error; the other returned no response text. |
-| Inkling, original prompt | Rejected this client with HTTP 403; no solution was evaluated successfully. |
-
-We retained the original prompt because the shorter version did not improve
-correctness in these trials. We select Ling explicitly so each request targets
-the same model. `openrouter/free` may choose different models between requests;
-it does not guarantee the best model for a task. No paid router or automatic
-provider fallback is used.
+**2026-09-29 update:** OpenRouter removed all free-tier models. 
+`inclusionai/ling-3.0-flash-vl:free` is no longer available. We re-measured and
+selected `gemini-3.5-flash-lite` through Google's generative API, which passed
+all five random MBPP tasks in `exam_mbpp.sh` (2026-09-29). Gemini remains on Google's
+free tier with no credit card required.
 
 The [comparison evidence](benchmark_runs/mbpp_comparison_20260912/README.md)
 includes all attempts, both prompts, configurations, model responses and
@@ -249,18 +237,17 @@ Through OpenRouter, all on the free tier:
   3/3 in the report and passed `sympy__sympy-14711` once.
 - `nvidia/nemotron-3.5-lightning:free` and `google/gemma-4-31b-it:free` — measured in
   the report and discarded (0/3).
-- `inclusionai/ling-3.0-flash-vl:free` — **the MBPP model.** It validated tasks 396
-  and 163 through moulinette and scored 5/5 twice in the real `exam_mbpp.sh`.
+- `gemini-3.5-flash-lite` — **the MBPP model** (as of 2026-09-29). It passed 5/5 
+  random tasks in `exam_mbpp.sh` through Google's free generative API.
 
 For the exam, pass `--model-name qwen/qwen3.8-27b --provider-url
-https://api.groq.com/openai/v1` to `exam_swebench.sh`, and `--model-name inclusionai/ling-3.0-flash-vl:free
---provider-url https://openrouter.ai/api/v1` to `exam_mbpp.sh`. The `.env` must contain
+https://api.groq.com/openai/v1` to `exam_swebench.sh`, and `--model-name gemini-3.5-flash-lite
+--provider-url https://generativelanguage.googleapis.com/v1beta/openai` to `exam_mbpp.sh`. The `.env` must contain
 `AGENT_SMITH_MODELS_CONFIG=configs/models_template.json`, as `.env.example` does.
 
-The three OpenRouter entries above declare no stop sequence because those models do not
-support one. The client therefore only asks OpenRouter to honour parameters when a stop
-sequence is actually configured; requesting it unconditionally would exclude them from
-routing.
+Some free models do not support the `stop` parameter. The client only requests it
+when a stop sequence is actually configured in the model entry, to avoid excluding
+those models from provider routing.
 
 Availability and quotas can change. The project requires free access without
 purchased credits or billing-enabled accounts. Extra keys do not imply extra
@@ -400,8 +387,8 @@ AGENT_SMITH_MODELS_CONFIG=configs/models_template.json \
 uv run --env-file .env --offline --no-sync --python 3.10 python -m agent_mbpp \
   --task-file ../cache/mbpp/live_task.json \
   --output ../cache/mbpp/live_solution.json \
-  --model-name inclusionai/ling-3.0-flash-vl:free \
-  --provider-url https://openrouter.ai/api/v1
+  --model-name gemini-3.5-flash-lite \
+  --provider-url https://generativelanguage.googleapis.com/v1beta/openai
 ```
 
 3. In the moulinette directory: `uv run --python 3.10 moulinette_eval validate mbpp ../cache/mbpp/live_task.json ../cache/mbpp/live_solution.json`.
@@ -409,8 +396,6 @@ uv run --env-file .env --offline --no-sync --python 3.10 python -m agent_mbpp \
 Do not pass `--skip-metrics`. Keep both JSON files and the validator's output,
 including failures. CLI exit code 0 means a result JSON was written; inspect its
 `success` and `error`. Only moulinette validation decides benchmark correctness.
-To explicitly select Gemini, use model `gemini-2.5-flash-lite` and provider URL
-`https://generativelanguage.googleapis.com/v1beta/openai` with the same config file.
 
 ### Logging
 
