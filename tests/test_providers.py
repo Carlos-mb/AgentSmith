@@ -60,10 +60,20 @@ def test_default_models_configuration_serves_both_exams():
     assert backup.api_keys == ["k"]
     assert backup.config.stop_sequences == ["<end_code>", "Observation:"]
 
+    assert swebench.config.max_input_per_request == 6000
+    assert backup.config.max_input_per_request is None
+
     mbpp = ProviderClient.from_environment(
         "https://openrouter.ai/api/v1", "inclusionai/ling-3.0-flash-vl:free", path,
         {"OPENROUTER_API_KEY": "k"})
     assert mbpp.api_keys == ["k"]
+
+
+def test_the_per_request_input_cap_is_optional_and_positive():
+    assert config().max_input_per_request is None
+    assert config(max_input_per_request=6000).max_input_per_request == 6000
+    with pytest.raises(ValueError):
+        config(max_input_per_request=0)
 
 
 def test_payload_and_measured_usage(monkeypatch):

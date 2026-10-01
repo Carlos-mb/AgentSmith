@@ -207,7 +207,8 @@ Through Groq, with `GROQ_API_KEY`, `GROQ_API_KEY_2` and `GROQ_API_KEY_3`:
 - `qwen/qwen3.8-27b` — **the SWE-bench model.** It is the only model that solves
   `sympy__sympy-14711` reliably (five of five attempts), passed all six exam-pool tasks
   and scored 3/3 in the real `exam_swebench.sh` ([benchmark report](BENCHMARK_REPORT.md),
-  section 6). Groq's free tier allows 8,000 tokens per minute and 200,000 per day per
+  section 6). Groq's free tier allows 8,000 tokens per minute, 7,000 input tokens per request
+  (`max_input_per_request: 6000` keeps it below) and 200,000 per day per
   account, so its requests are often refused with HTTP 429 and the client waits as long
   as `retry-after` asks, switching to the key available soonest. It runs with
   `reasoning_effort: "none"` and 10 retries.

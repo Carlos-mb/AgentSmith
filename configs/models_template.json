@@ -141,6 +141,7 @@
       "timeout_seconds": 120,
       "max_retries": 10,
       "max_output_per_request": 600,
+      "max_input_per_request": 6000,
       "stop_sequences": [
         "<end_code>",
         "Observation:"

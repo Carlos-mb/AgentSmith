@@ -527,7 +527,9 @@ client waited as long as `retry-after` asked (`14711`, `xarray-4629`, `18189`;
 11, 7 and 7 iterations; 93, 62 and 64 s). Its costs: about 60% more input
 tokens than `codestral-2508` on the matrix, several minutes per task on one
 account, and a free tier of 8,000 tokens per minute and 200,000 per day per
-account. Evidence: `qwen_20260917/`.
+account. Groq also refuses any request above 7,000 input tokens with HTTP 413,
+which no wait fixes; this cost `14711` on 29 September, so its configuration
+caps the history sent per request (`max_input_per_request: 6000`). Evidence: `qwen_20260917/`.
 
 **First backup: `codestral-2508` (Mistral).** 3/3 on the matrix tasks with 14
 iterations and 34,139 input tokens, the fewest of all, less than half of

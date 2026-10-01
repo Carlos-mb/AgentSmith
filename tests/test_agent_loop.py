@@ -12,7 +12,8 @@ from agent_smith.sandbox_session import SandboxSession
 
 class ScriptedProvider:
 
-    def __init__(self, replies):
+    def __init__(self, replies, max_input_per_request=None):
+        self.config = SimpleNamespace(max_input_per_request=max_input_per_request)
         self.replies = iter(replies)
         self.histories = []
 
@@ -22,8 +23,8 @@ class ScriptedProvider:
         return CompletionResponse(text, 100, 50, 1, "https://example.invalid/v1", "fixture", 0, 1)
 
 
-def run(replies, **limits):
-    provider = ScriptedProvider(replies)
+def run(replies, cap=None, **limits):
+    provider = ScriptedProvider(replies, cap)
     def scenario():
         sandbox = SandboxSession(SandboxConfig(allowed_directories=[]))
         try:
@@ -136,7 +137,7 @@ def test_an_unusable_response_becomes_an_observation_instead_of_ending_the_task(
     ]
 
     class Proveedor:
-        config = SimpleNamespace()
+        config = SimpleNamespace(max_input_per_request=None)
         def complete(self, messages, **kwargs):
             return respuestas.pop(0)
 
@@ -188,3 +189,19 @@ def test_the_loop_runs_the_block_that_calls_a_tool_after_an_example():
     )
 
     assert caja.codigos == ["print(get_patch())", "final_answer('listo')"]
+
+
+FIVE_REPLIES = ["```python\nprint(1)\n```"] * 4 + ["```python\nfinal_answer('ok')\n```"]
+
+
+def test_without_a_per_request_cap_the_whole_history_is_sent():
+    result, provider = run(FIVE_REPLIES, iterations=5)
+    assert result.success
+    assert len(provider.histories[4]) == 2 + 4 * 2
+
+
+def test_a_per_request_cap_trims_the_history_sent_to_the_model():
+    # Change 2: Groq answers 413 to any Qwen request above 7,000 input tokens.
+    result, provider = run(FIVE_REPLIES, cap=1, iterations=5)
+    assert result.success
+    assert len(provider.histories[4]) == 2 + MINIMUM_HISTORY_MESSAGES

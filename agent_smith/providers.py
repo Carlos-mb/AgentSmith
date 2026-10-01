@@ -39,6 +39,7 @@ class ProviderConfig(BaseModel):
     reasoning_effort: str | None = None
     reasoning_enabled: bool | None = None
     max_output_per_request: int = Field(default=600, gt=0)
+    max_input_per_request: int | None = Field(default = None, gt=0)
     output_limit_parameter: Literal[
         "max_tokens", "max_completion_tokens"] = "max_tokens"
 

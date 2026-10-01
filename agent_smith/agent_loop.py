@@ -32,7 +32,8 @@ def trim_history(
     quadratically: one run spent 296,410 of its 300,000 input tokens. A fixed
     window does not work either: with three pairs the model forgot it had
     already edited a file and re-read the same ranges 22 times. So the size
-    is set by the remaining budget divided among the remaining iterations.
+    is set by the remaining budget divided among the remaining iterations,
+    or by the model's max_input_per_request if that is smaller.
     MINIMUM_HISTORY_MESSAGES are always sent even if they do not fit:
     without the latest exchanges the model cannot continue.
     """
@@ -150,6 +151,17 @@ def run_agent_loop(
             # Share the remaining input budget among the remaining iterations.
             share = ((limits.max_input_tokens - input_tokens)
                      // (limits.max_iterations - number + 1))
+
+            # Groq's free tier refuses any Qwen request above 7,000 input
+            # tokens (HTTP 413), however long we wait: cap each request.
+            if (provider.config.max_input_per_request and
+                share > provider.config.max_input_per_request):
+                logger.info("Iteración %s: presupuesto del historial %s "
+                            "limitado al tope por petición del modelo (%s)",
+                            number, share,
+                            provider.config.max_input_per_request)
+                share = provider.config.max_input_per_request
+
             completion = provider.complete(
                 trim_history(messages, share),
                 max_input_tokens=limits.max_input_tokens - input_tokens,
