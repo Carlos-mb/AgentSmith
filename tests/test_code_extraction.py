@@ -308,3 +308,56 @@ def test_a_python_fence_still_wins_over_tool_use():
     output = "```python\nprint(1)\n```\n<tool_use>\n<tool_name>get_patch</tool_name>\n</tool_use>"
 
     assert extract_agent_code(output)[0] == "print(1)"
+
+
+# Change 1 of notes/PLAN_CAMBIOS_14711.md: given the tool names discovered by
+# MCP, run the first block that calls one of them, not an example before it.
+TOOLS = ["edit_file", "get_patch", "run_tests", "final_answer"]
+
+
+def test_an_example_block_before_the_call_is_not_executed():
+    # Qwen, sympy-14711, 29/09, step 11 (shortened): we ran the example, the
+    # model saw "printed nothing" and concluded its edit had not worked.
+    output = (
+        "The fix should be:\n"
+        "```python\ndef __add__(self, other):\n    if other == 0:\n        return self\n```\n"
+        "Let me apply this fix.\n"
+        "```python\nprint(edit_file(filepath='/testbed/vector.py', old_str='a', new_str='b'))\n```"
+    )
+
+    code, feedback = extract_agent_code(output, TOOLS)
+
+    assert code == "print(edit_file(filepath='/testbed/vector.py', old_str='a', new_str='b'))"
+    assert feedback == ""
+
+
+def test_an_action_followed_by_final_answer_runs_the_action():
+    # Codestral writes both in one reply: running the last block would submit
+    # the patch before seeing the test results.
+    output = "```python\nprint(run_tests())\n```\n```python\nfinal_answer(get_patch())\n```"
+
+    assert extract_agent_code(output, TOOLS)[0] == "print(run_tests())"
+
+
+def test_when_no_block_calls_a_tool_the_first_one_runs_as_before():
+    output = "```python\nx = 1\nprint(x)\n```\n```python\ny = 2\n```"
+
+    assert extract_agent_code(output, TOOLS) == ("x = 1\nprint(x)", "")
+
+
+def test_without_tool_names_the_first_block_runs_as_before():
+    output = "```python\nx = 1\n```\n```python\nprint(get_patch())\n```"
+
+    assert extract_agent_code(output) == ("x = 1", "")
+
+
+def test_a_block_that_calls_a_tool_but_does_not_compile_is_skipped():
+    # A broken block is left to today's code, which reports the syntax error
+    # instead of sending it to the sandbox.
+    output = (
+        "```python\nx = 1\n```\n"
+        "```python\nprint(edit_file(filepath=\n```\n"
+        "```python\nprint(get_patch())\n```"
+    )
+
+    assert extract_agent_code(output, TOOLS)[0] == "print(get_patch())"

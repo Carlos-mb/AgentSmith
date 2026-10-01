@@ -551,9 +551,14 @@ the matrix tasks, three on 14 September plus six in the ablation, with one
 retry in 76 steps, and 2/3 twice in the real `exam_swebench.sh`. It used the
 fewest input tokens of the first eight models (77,425), and it sits on a
 different provider. It has never passed `sympy__sympy-14711`: in the two
-attempts examined step by step, it wrote its fix as a function defined inside
-the sandbox instead of editing the file, reached `edit_file` only at step 25
-or 28, and broke the tests.
+attempts examined step by step, its fix reached the sandbox as a function
+definition instead of an edit, reached `edit_file` only at step 25 or 28, and
+broke the tests. A later replay (29 September) showed that this was partly our
+extractor, not the model: in 4 of those 7 definitions the reply also held the
+real `edit_file` call in a later block, and we executed the example instead.
+In the 15 September exam run, the edit it wrote at step 27 was a valid fix
+(moulinette: PASSED). Fixed on 1 October: the extractor now runs the first
+block that calls a tool.
 
 **Third backup: `dots-studio/dots-3-note-preview:free`.** 3/3, with 100%
 availability and no retries. It uses about 14% more input tokens and 2.6× the

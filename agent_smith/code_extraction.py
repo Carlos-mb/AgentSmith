@@ -187,13 +187,50 @@ CONVERTED_TOOL_CALL_FEEDBACK = (
 )
 
 
-def extract_agent_code(llm_output: str) -> tuple[str, str]:
-    """Return executable Python from a fenced block, or from tool calls."""
+def _first_block_calling(llm_output: str, tool_names: list = []) -> str:
+    """Return the first closed ```python block that calls one of tool_names."""
+    logger.debug("Entrando en _first_block_calling")
+
+    blocks = re.findall(r"```python(.*?)```", llm_output, re.DOTALL)
+
+    # Enumarete is only needed for logging.
+    for number, block in enumerate(blocks, start=1):
+        block = block.strip()
+        for tool_name in tool_names:
+            if tool_name + "(" in block:
+                try:
+                    ast.parse(block)
+                    if number > 1:
+                        logger.info("Se ejecuta el bloque %s: los anteriores "
+                                    "no llaman a ninguna herramienta o no "
+                                    "compilan", number)
+                    return block
+                except SyntaxError:
+                    logger.debug("El bloque %s llama a %s pero no compila; "
+                                 "se salta", number, tool_name)
+                    break
+
+    return ""
+
+
+def extract_agent_code(llm_output: str, tool_names: list = []) -> tuple[str, str]:
+    """Return executable Python from a fenced block, or from tool calls.
+
+    With tool_names, the first closed ```python block that calls one of them
+    wins: models often write an example block before the real call. Without
+    a match, or without names, the first block is used as before.
+    """
     logger.debug("Entrando en extract_agent_code")
+
+    code = _first_block_calling(llm_output, tool_names)
+    if code:
+        return code, ""
+
     code, feedback = extract_python_code(llm_output)
     if code:
         return code, feedback
 
+    # Do the same loop with 2 functions
     for convertir in (convert_tool_calls, convert_tool_use):
         try:
             converted = convertir(llm_output)

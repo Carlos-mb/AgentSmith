@@ -122,6 +122,14 @@ def run_agent_loop(
     success = False
     error = None
     step = None
+
+    tool_names = ["final_answer"]
+    if sandbox.manual:
+        for tool in sandbox.manual.tools:
+            tool_names.append(tool["name"])
+    logger.debug("Nombres que el extractor reconoce como llamadas: %s",
+                 tool_names)
+
     try:
         for number in range(1, limits.max_iterations + 1):
             logger.info(
@@ -194,7 +202,7 @@ def run_agent_loop(
                 messages.append({"role": "user",
                                  "content": "Observation:\n" + error})
                 continue
-            code, feedback = extract_agent_code(completion.text)
+            code, feedback = extract_agent_code(completion.text, tool_names)
             execution = None
             if code:
                 logger.info("Iteración %s: ejecutando el bloque Python "

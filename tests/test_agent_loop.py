@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from agent_smith.agent_loop import run_agent_loop, trim_history, MINIMUM_HISTORY_MESSAGES
 from agent_smith.models import AgentLimits, SandboxConfig
 from agent_smith.providers import CompletionResponse
+from agent_smith.sandbox import SandboxExecution
 from agent_smith.sandbox_session import SandboxSession
 
 
@@ -140,6 +141,8 @@ def test_an_unusable_response_becomes_an_observation_instead_of_ending_the_task(
             return respuestas.pop(0)
 
     class Caja:
+        manual = None
+
         def execute(self, code, deadline=None):
             from agent_smith.sandbox import SandboxExecution
             return SandboxExecution(final_answer="listo")
@@ -156,3 +159,32 @@ def test_an_unusable_response_becomes_an_observation_instead_of_ending_the_task(
     assert resultado.success is True
     assert resultado.iterations == 2
     assert "did not contain text content" in resultado.steps[0].sandbox_output
+
+
+def test_the_loop_runs_the_block_that_calls_a_tool_after_an_example():
+    # Change 1: the names come from MCP discovery (sandbox.manual), plus the
+    # sandbox's own final_answer.
+    class Caja:
+        manual = SimpleNamespace(tools=[{"name": "get_patch"}])
+
+        def __init__(self):
+            self.codigos = []
+
+        def execute(self, code, deadline=None):
+            self.codigos.append(code)
+            return SandboxExecution(output="ok")
+
+    caja = Caja()
+    respuestas = [
+        "```python\ndef ejemplo():\n    pass\n```\n```python\nprint(get_patch())\n```",
+        "```python\nx = 1\n```\n```python\nfinal_answer('listo')\n```",
+    ]
+    run_agent_loop(
+        task_id="t", benchmark="swebench", system_prompt="s", task_prompt="p",
+        provider=ScriptedProvider(respuestas), sandbox=caja,
+        limits=AgentLimits(max_iterations=2, max_input_tokens=1000,
+                           max_output_tokens=1000, max_time_seconds=60),
+        started_at=time.monotonic(),
+    )
+
+    assert caja.codigos == ["print(get_patch())", "final_answer('listo')"]
