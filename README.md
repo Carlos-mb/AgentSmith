@@ -376,7 +376,7 @@ were lost. `final_answer` is printed and then the REPL continues.
 Use the normal project environment and its configured Docker daemon. The worker's
 environment contains no API keys or Docker configuration; the agent loads
 provider keys. Install dependencies with `uv sync --python 3.10` and prepare the
-Docker image with `docker pull python:3.10.12-slim`. Keep provider keys in the local,
+Docker image with `docker pull python:3.11-slim`, the same image moulinette uses. Keep provider keys in the local,
 gitignored `.env`, based on `.env.example`. The program reads environment variables;
 `uv --env-file` loads the file for the run.
 

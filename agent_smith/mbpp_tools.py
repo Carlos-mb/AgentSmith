@@ -17,7 +17,7 @@ from typing import Any
 logger = get_logger('agent_smith.mbpp_tools')
 
 
-DEFAULT_DOCKER_IMAGE = "python:3.10.12-slim"
+DEFAULT_DOCKER_IMAGE = "python:3.11-slim"
 DEFAULT_TIMEOUT_SECONDS = 10
 MAX_OUTPUT_CHARACTERS = 12_000
 SESSION_LABEL = "agent-smith.mbpp.session"
@@ -96,7 +96,7 @@ def run_mbpp_tests(
     command = [
         "docker", "run", "--rm", "--name", name,
         "--label", f"{SESSION_LABEL}={session}",
-        "--network", "none", "--memory", "128m", "--cpus", "0.5",
+        "--network", "none", "--memory", "128m",
         "--pull", "never", DEFAULT_DOCKER_IMAGE,
         "python", "-u", "-c", program,
     ]
