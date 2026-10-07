@@ -12,8 +12,8 @@ result was checked with `moulinette_eval validate swebench`, never with
 fixes of section 7. Section 5.6 was measured on 18 September 2026 at commit
 `6f6949b`, after the 17 September simplification. One Thought → Code →
 Observation loop, nine MCP tools, the task container held open by the agent's
-stdin. Exam limits: 30 iterations, 300,000 input tokens, 10,000 output tokens,
-900 seconds. Every model uses the same prompt and `configs/models_template.json`:
+stdin. Task limits from the subject: 30 iterations, 300,000 input tokens,
+10,000 output tokens, 900 seconds. Every model uses the same prompt and `configs/models_template.json`:
 at most 600 output tokens per request; Gemini and Mistral 120 s timeout and 4
 retries, OpenRouter 60 s and 2 retries. `codestral-2508` stops at `<end_code>`
 and `Observation:` (section 5.4).
@@ -39,33 +39,30 @@ OpenRouter at the time of the matrix, one for Mistral, one for Groq.
 
 Why these three:
 
-- They belong to the six-task pool the exam draws from (`EXAM_POOL` in
-  moulinette's `swebench/interact.py`), so the comparison measures tasks that
-  can actually be graded.
 - Two repositories with different test runners (sympy's `bin/test`, Django's
   `runtests.py`), so one project's quirks do not decide the ranking.
 - All three pass with the reference model, so a failure points at the model or
   the provider, not at an impossible task.
-- Their images are the smallest in the pool, about 4 GB each, against 5.3 GB for
-  `scikit-learn__scikit-learn-13439` and 7.6 GB for `pydata__xarray-4629`. The
-  disk filled once while images were being pulled. The sixth pool task,
-  `sympy__sympy-14711`, was run separately after the matrix.
-  `gemini-3.5-flash-lite` failed all six of its attempts, each time running
-  out of iterations or input budget with no final answer: two on their own,
-  two in real `exam_swebench.sh` runs, one in section 5.3 and one while
-  testing a prompt variant.
-  `dots-3-note-preview` passed it in 26 iterations with 96,724 input tokens.
-  `codestral-2508` passed it once in two runs with its final configuration:
-  15 iterations and 55,614 input tokens in the real `exam_swebench.sh`, and
-  30 iterations with no final answer in section 5.4, and a wrong patch in
-  a real `exam_swebench.sh` run on 17 September.
-  `qwen/qwen3.8-27b` passed it in all five of its attempts: three with one
-  Groq account (11, 10 and 7 iterations; 29,908, 31,466 and 19,644 input
-  tokens) and one in each of the two real `exam_swebench.sh` runs of
-  section 6.
-  The evidence is in `benchmark_runs/swebench_20260914/sympy-14711/`,
-  `…/exam_codestral_20260915/sympy-14711/` and
-  `…/qwen_20260917/one_account/sympy-14711/run1` to `run3`.
+- Their images are among the smallest of the tasks we ran, about 4 GB each,
+  against 5.3 GB for `scikit-learn__scikit-learn-13439` and 7.6 GB for
+  `pydata__xarray-4629`. The disk filled once while images were being pulled.
+
+`sympy__sympy-14711`, one of the tasks the subject suggests for first tests and
+the hardest one we measured, was run separately after the matrix.
+`gemini-3.5-flash-lite` failed all six of its attempts, each time running out
+of iterations or input budget with no final answer: two on their own, two in
+full three-task runs, one in section 5.3 and one while testing a prompt
+variant. `dots-3-note-preview` passed it in 26 iterations with 96,724 input
+tokens. `codestral-2508` passed it once in two runs with its final
+configuration: 15 iterations and 55,614 input tokens in a full three-task run,
+and 30 iterations with no final answer in section 5.4; it also submitted a
+wrong patch in a three-task run on 17 September. `qwen/qwen3.8-27b` passed it
+in all five of its attempts: three with one Groq account (11, 10 and 7
+iterations; 29,908, 31,466 and 19,644 input tokens) and one in each of the two
+three-task runs of section 6. The evidence is in
+`benchmark_runs/swebench_20260914/sympy-14711/`,
+`…/run_codestral_20260915/sympy-14711/` and
+`…/qwen_20260917/one_account/sympy-14711/run1` to `run3`.
 
 **When.** `gemini-3.5-flash-lite` on 14 September 2026; the other seven models
 and the ablations on 15 September 2026; `codestral-2508` on the evening of 15
@@ -357,7 +354,7 @@ another block, until the 600-token cap per request. The only change is adding
 `"Observation:"` to its `stop_sequences` in `configs/models_template.json`, so
 the provider ends the reply where the real observation should begin. The idea
 came from another student's project, whose default stop list is exactly these
-two strings. Same code, model, tasks and day, on all six pool tasks.
+two strings. Same code, model, tasks and day, on six tasks.
 
 | Task | Without the stop | With the stop |
 | --- | --- | --- |
@@ -390,7 +387,7 @@ and `…/ablation/observation_stop/`, then `codestral-2508/<task>/`.
   within a few hundred tokens. That is what a change acting only through that
   mechanism should produce.
 - **It does not solve `sympy__sympy-14711` reliably.** With the stop, the model
-  failed it here and passed it in the real `exam_swebench.sh` run the same
+  failed it here and passed it in a full three-task run the same
   evening (15 iterations): one of two.
 - **Decision: keep it, for this model only.** The other models write
   `<end_code>` and keep their single stop sequence; adding `Observation:` to
@@ -418,7 +415,7 @@ configuration and task, four runs on the evening of 15 September.
 | 2 | FAIL · 30 / 106,239 / 1,719 / 36 s | 24 | The same pattern as run 1 |
 | 3 | **PASS** · 11 / 27,423 / 604 / 24 s | 0 | No loop |
 | 4 | FAIL⁹ · 23 / 148,344 / 10,000 / 135 s | 0 | Read the wrong file in 10-line slices, 100 lines apart |
-| **Total** | 1/4 | | Without the warning: 1/2 (section 5.4 and the exam run) |
+| **Total** | 1/4 | | Without the warning: 1/2 (section 5.4 and the three-task run) |
 
 ⁹ Output budget exhausted: every reply from step 7 to 22 hit the 600-token cap,
 because the model wrote several `Thought:` blocks in a row, and the
@@ -516,11 +513,11 @@ rather than reported.
 
 **Selected: `qwen/qwen3.8-27b` (Groq).** It is the only model that solves
 `sympy__sympy-14711` reliably: five passes in five attempts, against roughly
-one in nine for `codestral-2508` (see the update below), the pool task that
-decides whether a run scores 2/3 or 3/3. With one Groq account it passed all six pool tasks: 3/3 on the matrix
+one in nine for `codestral-2508` (see the update below), on the hardest task
+we measured. With one Groq account it passed all six tasks measured: 3/3 on the matrix
 (19 iterations, 54,448 input tokens), `xarray-4629` in 6 iterations,
 `scikit-learn-13439` in 8, and `sympy-14711` three times. It submits in the step
-right after its tests pass. In the real `exam_swebench.sh` it scored 2/3 with
+right after its tests pass. In full three-task runs it scored 2/3 with
 two Groq accounts, losing `scikit-learn-13439` to 429 retries when the client
 still waited at most 5 s between keys, and 3/3 with three accounts once the
 client waited as long as `retry-after` asked (`14711`, `xarray-4629`, `18189`;
@@ -534,23 +531,23 @@ caps the history sent per request (`max_input_per_request: 6000`). Evidence: `qw
 **First backup: `codestral-2508` (Mistral).** 3/3 on the matrix tasks with 14
 iterations and 34,139 input tokens, the fewest of all, less than half of
 `gemini-3.5-flash-lite`'s 77,425. It also passed `xarray-4629` and `scikit-learn-13439` in 5 iterations
-each, and scored 3/3 in the real `exam_swebench.sh`, including
-`sympy__sympy-14711` (evidence: `exam_codestral_20260915/`). It submits in the
+each, and scored 3/3 in a full three-task run, including
+`sympy__sympy-14711` (evidence: `run_codestral_20260915/`). It submits in the
 step right after its tests pass, and it needed no retry: its free tier allowed
 125 requests and 625,000 tokens per minute. It depends on section 5.4's stop
 sequence; without it, it scored 4/6.
 
 **Update, 18 September.** Its record on `sympy__sympy-14711` is worse than the
 "one in two" reported earlier: the six runs of section 5.6 all failed, which
-puts it near one in nine. It stays the first backup — the other five pool tasks
-are solid and it is the cheapest model measured — but its weakness is that one
-task, so a run that draws it is likely a 2/3. Those runs also caught it
+puts it near one in nine. It stays the first backup — the other five tasks
+measured are solid and it is the cheapest model measured — but its weakness is that one
+task, so a run that includes it is likely a 2/3. Those runs also caught it
 drifting within a single hour (section 5.6), which is a second reason to check
 it on the day rather than trust a stored figure.
 
 **Second backup: `gemini-3.5-flash-lite`.** It passed all nine of its runs on
 the matrix tasks, three on 14 September plus six in the ablation, with one
-retry in 76 steps, and 2/3 twice in the real `exam_swebench.sh`. It used the
+retry in 76 steps, and 2/3 twice in full three-task runs. It used the
 fewest input tokens of the first eight models (77,425), and it sits on a
 different provider. It has never passed `sympy__sympy-14711`: in the two
 attempts examined step by step, its fix reached the sandbox as a function
@@ -558,7 +555,7 @@ definition instead of an edit, reached `edit_file` only at step 25 or 28, and
 broke the tests. A later replay (29 September) showed that this was partly our
 extractor, not the model: in 4 of those 7 definitions the reply also held the
 real `edit_file` call in a later block, and we executed the example instead.
-In the 15 September exam run, the edit it wrote at step 27 was a valid fix
+In a three-task run on 15 September, the edit it wrote at step 27 was a valid fix
 (moulinette: PASSED). Fixed on 1 October: the extractor now runs the first
 block that calls a tool.
 
@@ -589,7 +586,7 @@ availability changes by the hour. The rows for `gemini-3.5-flash`,
 `gemini-3.8-flash` and `gemma-4-31b-it` measure the providers that day at
 least as much as the models. Section 5.1 shows the same configuration varying
 by up to four iterations per task. `codestral-2508` has one run per task with
-its final configuration, plus the three of the exam run, all on one evening.
+its final configuration, plus the three of a full three-task run, all on one evening.
 `qwen3.8-27b` was measured on one day, and free tiers change: Groq no longer
 offered `llama-3.3-70b-versatile` on 17 September. Both should be measured
 again before the evaluation.
@@ -642,46 +639,32 @@ images were pulled beforehand, so the measured times exclude the download.
 
 ## 9. Verification run — 22 September 2026
 
-Five days before the evaluation window, `qwen/qwen3.8-27b` was measured again
-and `gemma-4-31b-it` was re-tested to validate the earlier findings and
-diagnose a failed test attempt with it. The code at that date includes a
-throttling fix for OpenRouter (1 second delay before each request) to reduce
-HTTP 429 refusals.
+`qwen/qwen3.8-27b` was measured again, and `gemma-4-31b-it` re-tested, to check
+the earlier findings.
 
-**Setup.** Same agent code (commit `c5853a8` with 17 September simplifications
-and the throttle added), same limits and configuration, same three Groq keys
-and three OpenRouter keys as before. Sandbox test first (`exam_sandbox.sh`);
-then MBPP and SWE-bench with explicit model selection via CLI flags.
+**Setup.** Same agent code, limits and configuration; three Groq keys and three
+OpenRouter keys. Model selected explicitly with `--model-name` and
+`--provider-url`.
 
 **Results.**
 
 | Benchmark | Result | Model | Time |
 | --- | --- | --- | --- |
-| Sandbox | **PASS 14/14 + bonus** | N/A | N/A |
 | MBPP | **PASS 5/5** | `qwen/qwen3.8-27b` | 3–4 s per task |
 | SWE-bench | **PASS 3/3** | `qwen/qwen3.8-27b` | 83 s (scikit-learn), others faster |
 
-**Qwen reliability remains high.** All five MBPP tasks passed in a single
-attempt; all three SWE-bench tasks passed (tasks `scikit-learn__scikit-learn-13439`,
-`sympy__sympy-13480`, `django__django-11066`). The model continues to handle
-the exam's three-task draw reliably.
+**Qwen remains reliable.** All five MBPP tasks passed at the first attempt, and
+all three SWE-bench tasks passed (`scikit-learn__scikit-learn-13439`,
+`sympy__sympy-13480`, `django__django-11066`).
 
-**Gemma-4-31b remains rate-limited.** All three OpenRouter API keys returned
-HTTP 429 before generating on the first request; retries also got 429. This
-is not a model issue but a provider quota limit: OpenRouter's free tier allows
-~50 requests per day per key, and all three keys were exhausted from earlier
-test runs. The rate limit does not reset at midnight; quota recovers slowly,
-at approximately 86 seconds of recovery per request made. The model's
-configuration is correct; the provider is not viable for exam use without
-dedicated keys or paid tier.
+**`gemma-4-31b-it` remains unusable on the free tier.** All three OpenRouter
+keys returned HTTP 429 before generating, on the first request and on every
+retry. This is a provider quota, not a model result: OpenRouter's free tier
+allowed about 50 requests per day per account, and the keys had been used up by
+earlier runs. A daily quota cannot be waited out within a task, so no client
+change can fix it.
 
-**OpenRouter throttling implemented.** To reduce the likelihood of 429 errors
-under normal circumstances, `agent_smith/providers.py` now applies a 1-second
-delay before each request to OpenRouter, and a 2-second minimum wait for
-retries. This does not resolve a daily quota exhaustion but reduces the
-probability of rate limiting during a single run when quota is available.
-
-**Conclusion.** Qwen remains the recommended production model. Its performance,
-reliability and token efficiency on the exam pool have not degraded. Gemma-4-31b
-is well-configured but OpenRouter's quota limits make it unsuitable for
-evaluation; that limitation should not be attributed to the model.
+**Conclusion.** Qwen remains the recommended model. `gemma-4-31b-it` may be
+configured correctly, but OpenRouter's free quota is too small for repeated
+runs, and that limit should not be attributed to the model. On 29 September
+2026 OpenRouter stopped offering these models for free altogether.

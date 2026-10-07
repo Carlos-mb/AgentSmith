@@ -168,8 +168,8 @@ def test_repl_exits_on_eof_without_executing_code(monkeypatch):
 
 
 def test_repl_runs_the_last_block_when_input_ends_without_a_blank_line(monkeypatch, capsys):
-    # Los tests del examen se envian con `cat fichero | sandbox`: el ultimo bloque
-    # llega sin linea en blanco y antes se quedaba sin ejecutar.
+    # Un guion enviado con `cat fichero | sandbox` puede acabar sin linea en
+    # blanco: el ultimo bloque llegaba asi y antes se quedaba sin ejecutar.
     entries = iter(["if True:", "    print('ultimo bloque')"])
 
     def next_entry(prompt):

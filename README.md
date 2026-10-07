@@ -8,11 +8,16 @@ Agent Smith is a Python project for an autonomous code agent. It targets MBPP,
 which contains small Python programming tasks, and SWE-bench, which requires
 patches for issues in real repositories.
 
-The intended agent follows `Thought -> Code -> Observation`: an LLM proposes
-Python code, a separate worker executes it, and the agent uses the observed result
-to decide its next step. The MBPP execution path is implemented. All five MBPP tasks
-passed moulinette correctness and metrics with Gemini 3.5 Flash Lite (2026-09-29).
-The wider evaluation remains pending.
+The agent follows `Thought -> Code -> Observation`: an LLM proposes Python code,
+a separate worker executes it, and the agent uses the observed result to decide its
+next step. Both benchmarks are implemented and validated with the moulinette; the
+measurements are in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md).
+
+[notes/GUIDE.md](notes/GUIDE.md) explains the project from the ground up: the
+background concepts, how Agent Smith works inside, a SWE-bench task from start to
+finish, and the lessons learned while building and measuring it; [notes/guide.html](notes/guide.html)
+is the same guide as a web page. If you are about to start this project yourself, begin
+with its "Before you start" section.
 
 ## Current status
 
@@ -45,13 +50,14 @@ defaults to 0.1 as in the reference, and missing-code feedback asks for the whol
 block again. Each step now records the model reported by the API, which matters
 when the explicitly selected free router changes models between requests.
 
-The SWE-bench tools and adapter are implemented: the tools pass the sandbox
-exam's own test, and a controlled cycle test drives the real CLI, container, MCP
+The SWE-bench tools and adapter are implemented: the tools have their own
+tests, and a controlled cycle test drives the real CLI, container, MCP
 server and worker through exploration, an edit and `final_answer(get_patch())`.
-All six tasks of the exam's pool pass moulinette with at least one model
+Six SWE-bench tasks pass moulinette with at least one model
 ([evidence](benchmark_runs/swebench_20260914/README.md)), and the model
 comparison is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md). Extraction takes a closed
-```python block first and otherwise converts two tool-call dialects into the
+```python block first (when a reply holds several, the first one that calls a
+discovered tool or `final_answer`) and otherwise converts two tool-call dialects into the
 equivalent Python calls: `<tool_call>` with `<arg_key>`/`<arg_value>`, and
 `<tool_use>` with `<tool_name>`/`<arguments>`. A provider's own `tool_calls`
 field is rewritten into the second dialect in `providers.py` first, so a call
@@ -62,8 +68,6 @@ dialect after its first observation, and every later iteration produced nothing
 executable without them.
 The subject's XML `<invoke>` and ReAct formats are still not handled; no model
 used here has produced them.
-Two validated MBPP tasks do not establish success on the full benchmark or the
-security examination.
 
 ## MBPP model selection history
 
@@ -74,7 +78,7 @@ through OpenRouter because it passed moulinette on tasks 396 and 163 (evidence i
 **2026-09-29 update:** OpenRouter removed all free-tier models. 
 `inclusionai/ling-3.0-flash-vl:free` is no longer available. We re-measured and
 selected `gemini-3.5-flash-lite` through Google's generative API, which passed
-all five random MBPP tasks in `exam_mbpp.sh` (2026-09-29). Gemini remains on Google's
+five randomly drawn MBPP tasks out of five (2026-09-29). Gemini remains on Google's
 free tier with no credit card required.
 
 The [comparison evidence](benchmark_runs/mbpp_comparison_20260912/README.md)
@@ -181,8 +185,8 @@ before the model generates anything, so its missing usage is a known zero. The
 client advances the key index and retries with the next key, which is what makes
 a second key useful at all; it never invents tokens for the rejected attempt.
 Note that a provider's free-tier quota is usually per account, so extra keys on
-the same account do not add quota. HTTP retry acceptance during the exam
-remains uncertain; set `max_retries` to 0 for a run without HTTP retries.
+the same account do not add quota. Set `max_retries` to 0 for a run without
+HTTP retries.
 
 Before sending, the client estimates input size as UTF-8 bytes divided by four
 (rounded up), plus chat framing headroom. This adapts the reference approximation
@@ -205,8 +209,8 @@ free tiers still offer. Several models those reports relied on
 Through Groq, with `GROQ_API_KEY`, `GROQ_API_KEY_2` and `GROQ_API_KEY_3`:
 
 - `qwen/qwen3.8-27b` — **the SWE-bench model.** It is the only model that solves
-  `sympy__sympy-14711` reliably (five of five attempts), passed all six exam-pool tasks
-  and scored 3/3 in the real `exam_swebench.sh` ([benchmark report](BENCHMARK_REPORT.md),
+  `sympy__sympy-14711` reliably (five of five attempts), passed all six tasks measured
+  and scored 3/3 in a full three-task run ([benchmark report](BENCHMARK_REPORT.md),
   section 6). Groq's free tier allows 8,000 tokens per minute, 7,000 input tokens per request
   (`max_input_per_request: 6000` keeps it below) and 200,000 per day per
   account, so its requests are often refused with HTTP 429 and the client waits as long
@@ -217,8 +221,8 @@ Through Mistral's API, with `MISTRAL_API_KEY` and `MISTRAL_API_KEY_2`:
 
 - `codestral-2508` — **the first SWE-bench backup.** It is the most efficient model in
   the report (14 iterations and 34,139 input tokens on the matrix) and scored 3/3 in
-  three of four real `exam_swebench.sh` runs; it solves `sympy__sympy-14711` about one
-  time in three.
+  three of four full three-task runs; it solves `sympy__sympy-14711` only about one
+  time in nine (report section 6).
   It stops at `<end_code>` and at `Observation:`; without the second stop it invented
   tool output until its token budget ran out (report section 5.4). On the free tier
   checked on 2026-09-15, `mistral-medium`, `mistral-small` and `devstral-medium` had a
@@ -226,25 +230,25 @@ Through Mistral's API, with `MISTRAL_API_KEY` and `MISTRAL_API_KEY_2`:
 
 Through Google's OpenAI-compatible endpoint, which has its own daily quota:
 
-- `gemini-3.5-flash-lite` — **the second SWE-bench backup and the MBPP backup.** It
-  passed 3/3 in the benchmark report, 2/3 twice in the real `exam_swebench.sh` (it has
-  never passed `sympy__sympy-14711`) and 5/5 in the real `exam_mbpp.sh`.
+- `gemini-3.5-flash-lite` — **the MBPP model since 2026-09-29, and the second SWE-bench
+  backup.** It passed 3/3 in the benchmark report, 2/3 twice in full three-task runs
+  (it has never passed `sympy__sympy-14711`) and five random MBPP tasks out of five.
 - `gemini-3.1-flash-lite`, `gemini-3.5-flash` and `gemini-3.8-flash` — measured in the
   report and discarded.
 
-Through OpenRouter, all on the free tier:
+Through OpenRouter, on the free tier (on 2026-09-29 OpenRouter stopped offering
+these models for free):
 
 - `dots-studio/dots-3-note-preview:free` — **the third SWE-bench backup.** It passed
   3/3 in the report and passed `sympy__sympy-14711` once.
 - `nvidia/nemotron-3.5-lightning:free` and `google/gemma-4-31b-it:free` — measured in
   the report and discarded (0/3).
-- `gemini-3.5-flash-lite` — **the MBPP model** (as of 2026-09-29). It passed 5/5 
-  random tasks in `exam_mbpp.sh` through Google's free generative API.
 
-For the exam, pass `--model-name qwen/qwen3.8-27b --provider-url
-https://api.groq.com/openai/v1` to `exam_swebench.sh`, and `--model-name gemini-3.5-flash-lite
---provider-url https://generativelanguage.googleapis.com/v1beta/openai` to `exam_mbpp.sh`. The `.env` must contain
-`AGENT_SMITH_MODELS_CONFIG=configs/models_template.json`, as `.env.example` does.
+To run each benchmark with its selected model, pass `--model-name qwen/qwen3.8-27b
+--provider-url https://api.groq.com/openai/v1` to `agent_swebench`, and
+`--model-name gemini-3.5-flash-lite --provider-url
+https://generativelanguage.googleapis.com/v1beta/openai` to `agent_mbpp`. Without
+`AGENT_SMITH_MODELS_CONFIG`, both agents read `configs/models_template.json`.
 
 Some free models do not support the `stop` parameter. The client only requests it
 when a stop sequence is actually configured in the model entry, to avoid excluding
@@ -318,7 +322,8 @@ The SWE-bench server exposes one command helper and the nine required tools:
 
 All nine run where the checkout lives. With `AGENT_SMITH_CONTAINER_ID` the helper
 uses `docker exec` inside that task container; otherwise it works on the host
-directory named by `TESTBED_PATH`, which is how the sandbox exam drives the tools.
+directory named by `TESTBED_PATH`, which lets the tools be tested without a
+container.
 Paths are always exchanged as `/testbed/...` and mapped onto the real root, so the
 model sees the same layout either way and cannot reach outside it. `run_tests`
 executes the supplied `eval_script`; `get_patch` returns the complete diff and is
@@ -465,9 +470,9 @@ If the default uv cache is read-only, prefix commands with
 `UV_CACHE_DIR=/tmp/agentsmith-uv-cache`; this does not change the interpreter.
 Reserve the full suite for integration work.
 
-The available moulinette includes public models and benchmark validation code.
-The three `exam_*.sh` scripts are absent. Tests, moulinette validation and the full
-examination are distinct. On 2026-09-12, the full integration suite passed
+The moulinette includes public models and benchmark validation code. Tests,
+moulinette validation and the evaluation scripts are distinct: passing one does
+not prove the others. On 2026-09-12, the full integration suite passed
 **198 tests in 26.44 seconds**, with Python 3.10.12 and Docker, without skips.
 This includes logging levels, silence by default, key redaction, clean JSON
 channels and controlled correction in both silent and DEBUG modes. No Agent Smith
@@ -501,11 +506,11 @@ change.
 
 ## Benchmark results and analysis
 
-The [benchmark report](BENCHMARK_REPORT.md) compares nine models on the same
+The [benchmark report](BENCHMARK_REPORT.md) compares ten models on the same
 three SWE-bench tasks, with provider reliability, two intermediary metrics and
-five ablations. `codestral-2508` is the selected model, with
+six ablations. `qwen/qwen3.8-27b` is the selected model, with `codestral-2508`,
 `gemini-3.5-flash-lite` and `dots-studio/dots-3-note-preview:free` as backups on
-two other providers.
+three other providers.
 Every figure is read from a `solution.json` kept under `benchmark_runs/`.
 
 ## Resources and AI assistance

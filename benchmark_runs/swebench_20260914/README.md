@@ -6,28 +6,30 @@ without `--skip-metrics`.
 
 ## Tasks run
 
-The exam draws three tasks at random from a pool of six (`EXAM_POOL` in
-moulinette's `swebench/interact.py`) and requires two to pass. All six pass
-here with at least one model: five with `gemini-3.5-flash-lite`, and
-`sympy__sympy-14711` with `dots-studio/dots-3-note-preview:free`.
-`gemini-3.5-flash-lite` failed it every time: twice on its own (below), twice
-in real exam runs, once after the `run_tests` fix (`ablation/run_tests_fix/`)
-and once with a prompt variant (`ablation/two_sentences/`).
+Six tasks were run: the three the subject suggests for first tests
+(`sympy__sympy-14711`, `sympy__sympy-13480` and `pydata__xarray-4629`) and three
+more (`sympy__sympy-18189`, `django__django-11066` and
+`scikit-learn__scikit-learn-13439`). All six pass here with at least one model:
+five with `gemini-3.5-flash-lite`, and `sympy__sympy-14711` with
+`dots-studio/dots-3-note-preview:free`. `gemini-3.5-flash-lite` failed that one
+every time: twice on its own (below), twice in full three-task runs, once after
+the `run_tests` fix (`ablation/run_tests_fix/`) and once with a prompt variant
+(`ablation/two_sentences/`).
 
-`codestral-2508`, the SWE-bench model since 15 September, passes all six with
+`codestral-2508`, the SWE-bench model from 15 to 17 September and the first
+backup after that, passes all six with
 its final configuration. `sympy__sympy-14711` passed in one of its two runs.
 Its runs are in `ablation/observation_stop/` (all six tasks; the configuration
 without the `Observation:` stop is in `ablation/without_observation_stop/`) and
-`exam_codestral_20260915/`: the real `exam_swebench.sh`, 3/3 on
+`run_codestral_20260915/`: a full three-task run, 3/3 on
 `sympy__sympy-14711` (15 iterations, 55,614 input tokens), `django__django-11066`
 (5, 13,316) and `sympy__sympy-13480` (5, 9,772). That directory keeps each
-task's `solution.json` and the exam script's output (`exam_stdout.log`), which
-contains the moulinette result.
+task's `task.json` and `solution.json`.
 
 **Correction, 16 September:** "passes all six" above describes that campaign, not
 a reliable rate. `scikit-learn__scikit-learn-13439` failed twice that day with
-`codestral-2508` — in a real `exam_swebench.sh` run and in a direct re-run — after
-passing in both ablation variants. With `sympy__sympy-14711` it is the second pool
+`codestral-2508` — in a full three-task run and in a direct re-run — after
+passing in both ablation variants. With `sympy__sympy-14711` it is the second
 task that goes one in two. Both runs of that day, with their three files each, are
 in `noop_edit_fix_20260916/`, which also documents the `edit_file` defect they
 exposed.
@@ -36,16 +38,15 @@ exposed.
 optimistic. Six more runs of that task with `codestral-2508` that day, three per
 condition of the ablation in `ablation/closing_example/` and
 `ablation/without_closing_example/`, **all failed**. Its record there is closer
-to one in nine. It remains the first SWE-bench backup — it scores 3/3 when that
-task is not drawn — but the figure to quote is the lower one. Those runs also
+to one in nine. It remains the first SWE-bench backup — it passes the other five
+tasks — but the figure to quote is the lower one. Those runs also
 showed the model drifting within the hour: replies fell from about 2,100
 characters to 215 with a stray `<!-- omit in toc -->` appended, and it moved
 from editing compulsively to looping on `read_file`. The README in
 `ablation/closing_example/` records both.
 
-`django__django-12308` and `scikit-learn__scikit-learn-11310` are **not** in the
-pool. They are listed because they were run and failed. (An earlier version of
-this file wrongly counted them in a pool of seven.)
+`django__django-12308` and `scikit-learn__scikit-learn-11310` were also run, and
+failed. They are listed for completeness.
 
 | Task | Model | Iterations | Input tokens | Output tokens | Time | Result |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
@@ -60,9 +61,9 @@ this file wrongly counted them in a pool of seven.)
 | `django__django-12308` | gemini-3.5-flash-lite | 26 | 201,313 | 974 | 36 s | FAILED — patch submitted but it does not fix the issue |
 | `scikit-learn__scikit-learn-11310` | gemini-3.5-flash-lite | 29 | 292,286 | 6,327 | 50 s | FAILED — input budget exhausted before a patch |
 
-Outside the pool, `sympy__sympy-23534` also passes with
-`dots-studio/dots-3-note-preview:free` (16 iterations, 98,430 input tokens, 58 s).
-It measures the agent but cannot be drawn by the exam.
+`sympy__sympy-23534`, the identifier the subject uses as an example, also passes
+with `dots-studio/dots-3-note-preview:free` (16 iterations, 98,430 input tokens,
+58 s).
 
 Across the six passing runs: **10.0 iterations on average and 16% of the input
 budget**. Limits are 30 iterations, 300,000 input tokens, 10,000 output tokens

@@ -245,7 +245,7 @@ def run_swebench_agent(
         if time.monotonic() >= deadline:
             raise TimeoutError("Task expired before setup.")
 
-        # The default keeps the exam working when its .env forgets
+        # The default keeps the agent working when its .env forgets
         # AGENT_SMITH_MODELS_CONFIG: without it every task ended with
         # "Missing API key". "or" also covers the variable being defined
         # but empty.

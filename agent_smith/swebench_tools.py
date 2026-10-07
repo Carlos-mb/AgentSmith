@@ -2,8 +2,8 @@
 
 Every operation runs where the checkout lives. With AGENT_SMITH_CONTAINER_ID
 the helper runs `docker exec` inside that task container; otherwise it runs
-on the host under TESTBED_PATH, which is how the sandbox exam drives these
-tools. The generated-code worker never receives the container id, a Docker
+on the host under TESTBED_PATH, which lets the tools be tested without a
+container. The generated-code worker never receives the container id, a Docker
 client or keys.
 
 Paths are always exchanged as /testbed/... so the model sees the same layout in

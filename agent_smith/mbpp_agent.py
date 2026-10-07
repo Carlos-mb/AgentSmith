@@ -108,7 +108,7 @@ def run_mbpp_agent(
         if time.monotonic() >= deadline:
             raise TimeoutError("Task expired before setup.")
 
-        # http client from environment vars. The default keeps the exam
+        # http client from environment vars. The default keeps the agent
         # working when its .env forgets AGENT_SMITH_MODELS_CONFIG: without
         # it every task ended with "Missing API key". "or" also covers the
         # variable being defined but empty.

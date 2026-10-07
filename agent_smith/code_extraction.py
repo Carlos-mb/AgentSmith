@@ -238,7 +238,7 @@ def extract_agent_code(llm_output: str, tool_names: list = []) -> tuple[str, str
             logger.warning("Llamada de herramienta malformada: %s", exc)
             return "", f"Malformed tool call: {exc}"
         if converted:
-            # The grading sheet requires a notice when a malformed block is
+            # The subject requires a notice when a malformed block is
             # interpreted anyway.
             return converted, CONVERTED_TOOL_CALL_FEEDBACK
     return code, feedback

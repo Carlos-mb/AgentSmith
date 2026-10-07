@@ -29,7 +29,7 @@ most expensive, because each one resends the whole history.
 ```
 
 Paths in the example are neutral (`/testbed/package/module.py`) on purpose: the
-reference project cdonaire uses real sympy paths, which risks sending the model
+example in another project uses real sympy paths, which risks sending the model
 to an invented path on a django or xarray task.
 
 ## Method

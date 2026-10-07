@@ -24,7 +24,7 @@ change can only act where the tool used to report a success that never occurred.
 
 | | `before/` | `after/` |
 | --- | --- | --- |
-| Run | exam script, 14:27 | direct run with the fix, 15:24 |
+| Run | full three-task run, 14:27 | direct run with the fix, 15:24 |
 | Verdict | `Overall: FAILED` | `Overall: FAILED` |
 | Iterations | 30 / 30 | 30 / 30 |
 | Input tokens | 288,129 | 270,596 |
